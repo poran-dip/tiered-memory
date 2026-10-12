@@ -135,3 +135,9 @@ sudo python3 native/sweep_ram.py --descend
 - gem5 simulates a few million instructions per second, so working sets may need to be scaled down from the 8 GB / 32 GB target, holding ratios constant rather than absolute sizes.
 - Caches are kept small so that megabyte-scale working sets reach DRAM.
 - Results are relative performance on a modeled system, not predictions for any specific product.
+
+## License
+
+Released under the [Apache License 2.0](LICENSE).
+
+gem5 is fetched at build time and remains under its own BSD-3-Clause license.
