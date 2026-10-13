@@ -30,7 +30,12 @@ from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_switchable_processor import SimpleSwitchableProcessor
 from gem5.isas import ISA
 from gem5.resources.resource import DiskImageResource, KernelResource
-from gem5.simulate.exit_handler import WorkBeginExitHandler, WorkEndExitHandler
+from gem5.simulate.exit_handler import (
+    AfterBootExitHandler,
+    KernelBootedExitHandler,
+    WorkBeginExitHandler,
+    WorkEndExitHandler,
+)
 from gem5.simulate.simulator import Simulator
 from gem5.utils.override import overrides
 from gem5.utils.requires import requires
@@ -48,6 +53,13 @@ GUEST_DIR = "/opt/tiered-memory"  # where make_disk.sh puts bin/ and tiered_memo
 CONSOLE_FILE = "board.pc.com_1.device"  # the guest's serial console, written to the outdir
 
 CPU = {"kvm": CPUTypes.KVM, "atomic": CPUTypes.ATOMIC, "timing": CPUTypes.TIMING, "o3": CPUTypes.O3}
+
+# This Ubuntu kernel drives gem5's IDE disk through libata, so it is sda, not X86Board's
+# default /dev/hda (with hda the guest panics: "Cannot open root device /dev/hda2").
+DISK_DEVICE = "/dev/sda"
+
+TICKS_PER_SEC = 10**12
+_roi_done = False  # set when the ROI's stats have been dumped; report() trusts stats.txt only then
 
 
 def add_common_args(p):
@@ -74,6 +86,13 @@ def add_common_args(p):
         "--interactive",
         action="store_true",
         help="boot to a shell instead of running the workload (attach with m5term)",
+    )
+    p.add_argument(
+        "--max-sim-sec",
+        type=float,
+        default=600,
+        help="give up after this much simulated time with no gem5 exit event (boot, ROI begin/end). "
+        "A guest kernel panic under KVM cannot stop gem5 by itself, so this is what ends a failed run",
     )
     p.add_argument("wl_args", nargs="*", help="workload arguments, after '--'")
 
@@ -125,38 +144,70 @@ def build_board(args, memory):
         kernel_args.append("interactive")
     board.set_kernel_disk_workload(
         kernel=KernelResource(local_path=res["kernel"]),
-        disk_image=DiskImageResource(local_path=str(disk), root_partition=res["root_partition"]),
+        # make_disk.sh records the partition it actually found the root filesystem on; the
+        # gem5-resources metadata value can be wrong (it says 1 for x86-ubuntu-24.04-img 4.0.0).
+        disk_image=DiskImageResource(
+            local_path=str(disk),
+            root_partition=res.get("disk_root_partition", res["root_partition"]),
+        ),
         readfile_contents=run_script(args.workload, args.wl_args),
         kernel_args=kernel_args,
+        disk_device=DISK_DEVICE,
     )
     return board
 
 
-def _install_roi_handlers():
-    """Override gem5's hypercall 4/5 handlers to switch CPUs around the ROI."""
+def _sim_sec():
+    return m5.curTick() / TICKS_PER_SEC
+
+
+def _install_handlers():
+    """Override gem5's hypercall handlers: print boot progress, switch CPUs around the ROI."""
+
+    class Booted(KernelBootedExitHandler):
+        @overrides(KernelBootedExitHandler)
+        def _process(self, simulator):
+            print(f"[{_sim_sec():.2f}s sim] kernel booted")
+
+    class AfterBoot(AfterBootExitHandler):
+        @overrides(AfterBootExitHandler)
+        def _process(self, simulator):
+            print(f"[{_sim_sec():.2f}s sim] guest logged in, starting the run script")
 
     class RoiBegin(WorkBeginExitHandler):
         @overrides(WorkBeginExitHandler)
         def _process(self, simulator):
             simulator.switch_processor()
             m5.stats.reset()
-            print(f"ROI begin at tick {m5.curTick()}: switched to the ROI CPU, stats reset")
+            print(f"[{_sim_sec():.2f}s sim] ROI begin: switched to the ROI CPU, stats reset")
 
     class RoiEnd(WorkEndExitHandler):
         @overrides(WorkEndExitHandler)
         def _process(self, simulator):
+            global _roi_done
             m5.stats.dump()
+            _roi_done = True
             simulator.switch_processor()
-            print(f"ROI end at tick {m5.curTick()}: stats dumped, back on the boot CPU")
+            print(f"[{_sim_sec():.2f}s sim] ROI end: stats dumped, back on the boot CPU")
 
 
 def run(board, args):
     """Simulate to the end of the guest script, then print a one-line report from the outputs."""
-    _install_roi_handlers()
+    _install_handlers()
     sim = Simulator(board=board)
+    # Window per stretch between exit events, not a total budget: gem5 restarts it at each exit.
+    sim.set_max_ticks(int(args.max_sim_sec * TICKS_PER_SEC))
+    outdir = Path(m5.options.outdir)
+    print(f"Booting; guest console: {outdir / CONSOLE_FILE}")
     sim.run()
-    print(f"EXIT cause={sim.get_last_exit_event_cause()} tick={sim.get_current_tick()}")
-    report(Path(m5.options.outdir), args.workload)
+    cause = sim.get_last_exit_event_cause()
+    print(f"EXIT cause={cause} tick={sim.get_current_tick()} ({_sim_sec():.2f}s sim)")
+    if "max tick" in str(cause).lower() or "simulate() limit" in str(cause).lower():
+        print(
+            f"Gave up after {args.max_sim_sec:g}s of simulated time with no progress. "
+            f"The guest probably panicked or hung: tail {outdir / CONSOLE_FILE}"
+        )
+    report(outdir, args.workload)
 
 
 def report(outdir, workload):
@@ -168,7 +219,8 @@ def report(outdir, workload):
     if res.get("checksum"):
         row["checksum"] = res["checksum"]
     sp = outdir / "stats.txt"
-    if sp.exists():
+    # Without a completed ROI, block 1 of stats.txt is the end-of-run dump, not the ROI.
+    if _roi_done and sp.exists():
         st = roi_block(sp)
         row.update(summarize(st))
         (outdir / "roi_stats.json").write_text(json.dumps(st, indent=1, sort_keys=True))

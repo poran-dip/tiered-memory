@@ -48,16 +48,30 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "Mounting the root filesystem (sudo)"
+log "Finding the root filesystem (sudo)"
 LOOP="$(sudo losetup --find --show --partscan "$OUT.tmp")"
-if [ -n "$PART" ]; then
-    DEV="${LOOP}p${PART}"
-    # partition device nodes can take a moment to appear
-    for _ in 1 2 3 4 5; do [ -b "$DEV" ] && break; sleep 1; done
-    [ -b "$DEV" ] || die "partition $DEV not found; check root_partition in $RES_JSON"
-else
+# gem5-resources metadata can name the wrong partition (x86-ubuntu-24.04-img 4.0.0 says 1, but
+# partition 1 is a 1 MiB BIOS-boot partition and the root ext4 filesystem is 2). Detect it
+# instead: the first ext4 partition. The metadata value is only a hint used for ordering.
+sleep 1 # partition device nodes can take a moment to appear
+ROOT_PART=""
+for p in $PART $(seq 1 16); do
+    DEV="${LOOP}p${p}"
+    [ -b "$DEV" ] || continue
+    if [ "$(sudo blkid -o value -s TYPE "$DEV" 2>/dev/null)" = ext4 ]; then
+        ROOT_PART="$p"
+        break
+    fi
+done
+if [ -z "$ROOT_PART" ]; then
+    # no partition table: the image is the filesystem itself
+    [ "$(sudo blkid -o value -s TYPE "$LOOP" 2>/dev/null)" = ext4 ] ||
+        die "no ext4 root filesystem found in $BASE (sudo fdisk -l and blkid on it to inspect)"
     DEV="$LOOP"
+else
+    DEV="${LOOP}p${ROOT_PART}"
 fi
+[ "$ROOT_PART" = "$PART" ] || echo "note: root filesystem is on partition '${ROOT_PART:-none}', not '$PART' as gem5-resources says; recording that for the boot"
 sudo mount "$DEV" "$MNT"
 
 log "Installing workloads and tiered_memory/ into $GUEST_DIR"
@@ -73,4 +87,13 @@ sudo umount "$MNT"
 sudo losetup -d "$LOOP"
 LOOP=""
 mv "$OUT.tmp" "$OUT"
-log "Disk image ready: $OUT"
+# The configs boot with root=/dev/sda<this>; record what was actually found.
+python3 - "$RES_JSON" "$ROOT_PART" <<'PY'
+import json, sys
+path, part = sys.argv[1], sys.argv[2] or None
+info = json.load(open(path))
+info["disk_root_partition"] = part
+with open(path, "w") as fh:
+    fh.write(json.dumps(info, indent=1) + "\n")
+PY
+log "Disk image ready: $OUT (root filesystem on partition ${ROOT_PART:-none})"
