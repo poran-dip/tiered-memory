@@ -19,7 +19,7 @@ def parse_result(text):
 def parse_tagged(text, tag):
     """JSON payload of the last '<tag> {...}' line in text, or {} (see tiered_memory.guest_run).
 
-    Full-system output arrives through the guest's serial console, so lines may end in '\\r'.
+    Full-system output read from the guest's serial console (the fallback) ends lines in '\\r'.
     """
     last = None
     for line in text.splitlines():

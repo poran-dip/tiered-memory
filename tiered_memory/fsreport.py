@@ -7,9 +7,10 @@ gem5, e.g. after adding a metric:
 
 Inputs in the run directory:
   guest_output.txt         the guest run script's stdout, copied to the host with gem5's writefile
-                           at the end of the run (complete, unlike the console file, which gem5
-                           only flushes when it exits)
-  board.pc.com_1.device    the guest serial console; fallback when guest_output.txt is missing
+                           at the end of the run. Only program output, so lines stay intact
+  board.pc.com_1.device    the guest serial console; fallback when guest_output.txt is missing.
+                           Guest kernel messages are interleaved with program output there and can
+                           split a RESULT or LINUXSTATS line, so a fallback report may lack them
   stats.txt                block 1 is the ROI only if the ROI completed (see roi_completed)
   roi_done                 empty marker written when the ROI's stats were dumped
 """

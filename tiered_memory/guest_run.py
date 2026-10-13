@@ -5,8 +5,8 @@ passes to the guest through gem5's readfile:
 
     cd /opt/tiered-memory && python3 -m tiered_memory.guest_run chase -s 64 -i 1
 
-Everything goes to stdout, which the guest's serial console sends to the host
-(m5out/board.pc.com_1.device). The host parses three kinds of lines:
+Everything goes to stdout. The run script tees it to a file and copies that to the host as
+<outdir>/guest_output.txt (gem5 writefile); tiered_memory.fsreport parses three kinds of lines:
 
     GUESTINFO {...}     kernel, NUMA nodes and their sizes, before the run
     RESULT ...          the workload's own result line (tiered_memory.result.parse_result)

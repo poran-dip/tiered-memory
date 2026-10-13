@@ -6,8 +6,10 @@ gem5 full-system, X86, stock Ubuntu 24.04 kernel and disk. Shared setup is in co
       --workload chase --kvm-no-perf -- -s 64 -i 1
 
 Config C (ideal upper bound, all fast) is this config with --fast-size 2560MiB.
-Outputs in the -d directory: stats.txt (block 1 = ROI), roi_stats.json, fs_result.json, and the
-guest console in board.pc.com_1.device.
+Outputs in the -d directory: stats.txt (block 1 = ROI), roi_stats.json, fs_result.json (the
+report; rebuild with python3 -m tiered_memory.fsreport <dir>), guest_output.txt (the guest's
+program output), and the guest's serial console in board.pc.com_1.device (boot log; check it
+when a run stops early).
 """
 
 import argparse
