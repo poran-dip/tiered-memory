@@ -20,6 +20,7 @@ third_party/resources.json); the disk actually booted is the copy with our binar
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import m5
@@ -34,6 +35,7 @@ from gem5.resources.resource import DiskImageResource, KernelResource
 from gem5.simulate.exit_handler import (
     AfterBootExitHandler,
     KernelBootedExitHandler,
+    ScheduledExitEventHandler,
     WorkBeginExitHandler,
     WorkEndExitHandler,
 )
@@ -47,6 +49,7 @@ sys.path.insert(0, str(REPO))
 
 from tiered_memory.fsreport import CONSOLE_FILE, ROI_MARKER, collect  # noqa: E402
 from tiered_memory.guest_script import run_script  # noqa: E402
+from tiered_memory.progress import Progress  # noqa: E402
 from tiered_memory.workloads import NAMES  # noqa: E402
 
 RESOURCES_JSON = REPO / "third_party/resources.json"
@@ -92,8 +95,16 @@ def add_common_args(p):
         "--max-sim-sec",
         type=float,
         default=600,
-        help="give up after this much simulated time with no gem5 exit event (boot, ROI begin/end). "
-        "A guest kernel panic under KVM cannot stop gem5 by itself, so this is what ends a failed run",
+        help="give up after this much simulated time with no gem5 exit event (boot, ROI begin/end), "
+        "or once the ROI itself has run this long. A guest kernel panic under KVM cannot stop gem5 "
+        "by itself, so this is what ends a failed run",
+    )
+    p.add_argument(
+        "--progress-sec",
+        type=float,
+        default=15,
+        help="during the ROI, print a progress line about every this many wall-clock seconds "
+        "(0 = off). Progress exits do not touch the stats",
     )
     p.add_argument("wl_args", nargs="*", help="workload arguments, after '--'")
 
@@ -179,6 +190,24 @@ def add_swap_disk(board, image_path, delay):
     return SWAP_DEVICE
 
 
+PROGRESS_EXIT = "tiered-memory progress"  # exit string of the scheduled progress exits
+
+# Set by run(): the ROI progress tracker, the board (for instruction counts) and an optional
+# callable returning extra text for each progress line (e.g. config D's swap usage).
+_progress = None
+_board = None
+_progress_extra = None
+
+
+def _insts():
+    """Instructions committed so far by the cores currently switched in."""
+    return sum(core.get_simobject().totalInsts() for core in _board.get_processor().get_cores())
+
+
+def _schedule_progress():
+    m5.scheduleTickExitAbsolute(m5.curTick() + _progress.interval, PROGRESS_EXIT)
+
+
 def _sim_sec():
     return m5.curTick() / TICKS_PER_SEC
 
@@ -202,18 +231,51 @@ def _install_handlers():
             simulator.switch_processor()
             m5.stats.reset()
             print(f"[{_sim_sec():.2f}s sim] ROI begin: switched to the ROI CPU, stats reset")
+            if _progress is not None:
+                _progress.start(m5.curTick(), _insts(), time.monotonic())
+                _schedule_progress()
 
     class RoiEnd(WorkEndExitHandler):
         @overrides(WorkEndExitHandler)
         def _process(self, simulator):
+            if _progress is not None:
+                _progress.stop()
             m5.stats.dump()
             (Path(m5.options.outdir) / ROI_MARKER).touch()
             simulator.switch_processor()
             print(f"[{_sim_sec():.2f}s sim] ROI end: stats dumped, back on the boot CPU")
 
+    class ProgressTick(ScheduledExitEventHandler):
+        """Prints a progress line and schedules the next one; never touches the stats."""
 
-def run(board, args):
-    """Simulate to the end of the guest script, then print a one-line report from the outputs."""
+        _stop = False
+
+        @overrides(ScheduledExitEventHandler)
+        def _process(self, simulator):
+            if _progress is None or not _progress.active:
+                return  # a leftover exit from a finished ROI: ignore it, schedule nothing
+            extra = _progress_extra() if _progress_extra else ""
+            print(_progress.sample(m5.curTick(), _insts(), time.monotonic(), extra), flush=True)
+            if _progress.over_budget(m5.curTick()):
+                print("Giving up: the ROI has run longer than --max-sim-sec of simulated time")
+                self._stop = True
+                return
+            _schedule_progress()
+
+        @overrides(ScheduledExitEventHandler)
+        def _exit_simulation(self):
+            return self._stop
+
+
+def run(board, args, progress_extra=None):
+    """Simulate to the end of the guest script, then print a one-line report from the outputs.
+
+    progress_extra: optional callable returning extra text for each ROI progress line.
+    """
+    global _progress, _board, _progress_extra
+    _board, _progress_extra = board, progress_extra
+    if args.progress_sec > 0:
+        _progress = Progress(wall_gap=args.progress_sec, max_sim_sec=args.max_sim_sec)
     _install_handlers()
     sim = Simulator(board=board)
     # Window per stretch between exit events, not a total budget: gem5 restarts it at each exit.

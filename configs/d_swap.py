@@ -66,4 +66,19 @@ print(f"Swap disk: {swap_image} ({format_size(swap_bytes)}, {args.swap_delay} pe
 memory = SingleChannelDDR4_2400(size=format_size(fast.size))
 board = build_board(args, memory, swap_device=SWAP_DEVICE)
 add_swap_disk(board, swap_image, args.swap_delay)
-run(board, args)
+
+
+def swap_written():
+    """Progress-line extra: how much of the sparse swap file the guest has written so far.
+
+    It only grows while the guest swaps out to new slots, so it shows swapping has happened, not
+    the current swap rate.
+    """
+    try:
+        used = swap_image.stat().st_blocks * 512
+    except OSError:
+        return ""
+    return f"swap file {used / MiB:.0f} MiB written"
+
+
+run(board, args, progress_extra=swap_written)
