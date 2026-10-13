@@ -6,10 +6,20 @@
 #include <cstring>
 #include <ctime>
 #include <utility>
-#ifdef USE_M5
+#if defined(USE_M5) || defined(USE_M5_FS)
 extern "C" {
 #include <gem5/m5ops.h>
 }
+#endif
+#ifdef USE_M5_FS
+// Full-system build (make m5-fs). The guest may start on the KVM CPU, which cannot trap gem5's
+// special instruction, so m5ops go through gem5's memory-mapped region instead (address mode).
+// map_m5_mem() lives in libm5.a (util/m5/src/m5_mmap.c) but its header is not installed; it opens
+// /dev/gem5_bridge (world-writable in the gem5 Ubuntu images) and falls back to /dev/mem.
+extern "C" void map_m5_mem();
+// Hypercall numbers handled by gem5's exit handlers (src/python/gem5/simulate/exit_handler.py).
+constexpr uint64_t kHypercallRoiBegin = 4;
+constexpr uint64_t kHypercallRoiEnd = 5;
 #endif
 
 struct Args {
@@ -54,9 +64,16 @@ inline double now_sec() {
 }
 
 inline double g_t0 = 0;
+// SE build: stats are reset at ROI begin and dumped at ROI end, so block 1 of stats.txt is the ROI.
+// FS build: the same happens in the config's exit handlers, which also switch the CPU model
+// (KVM outside the ROI, timing/O3 inside it).
 inline void roi_begin() {
 #ifdef USE_M5
     m5_reset_stats(0, 0);
+#endif
+#ifdef USE_M5_FS
+    map_m5_mem();
+    m5_hypercall_addr(kHypercallRoiBegin);
 #endif
     g_t0 = now_sec();
 }
@@ -64,6 +81,9 @@ inline double roi_end() {
     double t = now_sec() - g_t0;
 #ifdef USE_M5
     m5_dump_reset_stats(0, 0);
+#endif
+#ifdef USE_M5_FS
+    m5_hypercall_addr(kHypercallRoiEnd);
 #endif
     return t;
 }
