@@ -9,7 +9,9 @@ What a run does:
   3. At ROI begin the workload issues hypercall 4: switch to the ROI CPU (timing or O3), reset stats.
   4. At ROI end it issues hypercall 5: dump stats (so block 1 of stats.txt is the ROI, exactly as in
      SE mode), switch back to the boot CPU for the teardown.
-  5. When the script finishes the image issues hypercall 3 and the simulation exits.
+  5. The script copies its output to the host (gem5-bridge writefile -> <outdir>/guest_output.txt);
+     then the image issues hypercall 3 and the simulation exits.
+  6. tiered_memory.fsreport builds the report from the outdir (rerunnable without gem5).
 
 Kernel and base disk come from gem5-resources (scripts/setup.sh resources writes their local paths to
 third_party/resources.json); the disk actually booted is the copy with our binaries added
@@ -43,14 +45,12 @@ from gem5.utils.requires import requires
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from tiered_memory.gem5stats import roi_block, summarize  # noqa: E402
-from tiered_memory.result import parse_result, parse_tagged, throughput_cols  # noqa: E402
+from tiered_memory.fsreport import CONSOLE_FILE, GUEST_OUTPUT, ROI_MARKER, collect  # noqa: E402
 from tiered_memory.workloads import NAMES  # noqa: E402
 
 RESOURCES_JSON = REPO / "third_party/resources.json"
 DEFAULT_DISK = REPO / "third_party/disks/x86-ubuntu-24.04-tm.img"
 GUEST_DIR = "/opt/tiered-memory"  # where make_disk.sh puts bin/ and tiered_memory/ in the image
-CONSOLE_FILE = "board.pc.com_1.device"  # the guest's serial console, written to the outdir
 
 CPU = {"kvm": CPUTypes.KVM, "atomic": CPUTypes.ATOMIC, "timing": CPUTypes.TIMING, "o3": CPUTypes.O3}
 
@@ -59,7 +59,6 @@ CPU = {"kvm": CPUTypes.KVM, "atomic": CPUTypes.ATOMIC, "timing": CPUTypes.TIMING
 DISK_DEVICE = "/dev/sda"
 
 TICKS_PER_SEC = 10**12
-_roi_done = False  # set when the ROI's stats have been dumped; report() trusts stats.txt only then
 
 
 def add_common_args(p):
@@ -104,9 +103,18 @@ def _resources():
 
 
 def run_script(workload, wl_args):
-    """The shell script the guest runs after boot (gem5 readfile)."""
+    """The shell script the guest runs after boot (gem5 readfile).
+
+    Output goes to the console and to a file that writefile copies into the host outdir, because
+    gem5 only flushes the console file when it exits, after the report has been built.
+    """
     cmd = shlex.join(["python3", "-m", "tiered_memory.guest_run", workload, *wl_args])
-    return f"#!/bin/bash\ncd {GUEST_DIR}\n{cmd}\n"
+    return (
+        "#!/bin/bash\n"
+        f"cd {GUEST_DIR}\n"
+        f"{cmd} 2>&1 | tee /tmp/{GUEST_OUTPUT}\n"
+        f"gem5-bridge writefile /tmp/{GUEST_OUTPUT} {GUEST_OUTPUT}\n"
+    )
 
 
 def build_board(args, memory):
@@ -184,9 +192,8 @@ def _install_handlers():
     class RoiEnd(WorkEndExitHandler):
         @overrides(WorkEndExitHandler)
         def _process(self, simulator):
-            global _roi_done
             m5.stats.dump()
-            _roi_done = True
+            (Path(m5.options.outdir) / ROI_MARKER).touch()
             simulator.switch_processor()
             print(f"[{_sim_sec():.2f}s sim] ROI end: stats dumped, back on the boot CPU")
 
@@ -207,29 +214,7 @@ def run(board, args):
             f"Gave up after {args.max_sim_sec:g}s of simulated time with no progress. "
             f"The guest probably panicked or hung: tail {outdir / CONSOLE_FILE}"
         )
-    report(outdir, args.workload)
-
-
-def report(outdir, workload):
-    """Collect what the run produced; writes roi_stats.json and fs_result.json next to stats.txt."""
-    console = outdir / CONSOLE_FILE
-    text = console.read_text(errors="replace") if console.exists() else ""
-    row = {"workload": workload}
-    res = parse_result(text)
-    if res.get("checksum"):
-        row["checksum"] = res["checksum"]
-    sp = outdir / "stats.txt"
-    # Without a completed ROI, block 1 of stats.txt is the end-of-run dump, not the ROI.
-    if _roi_done and sp.exists():
-        st = roi_block(sp)
-        row.update(summarize(st))
-        (outdir / "roi_stats.json").write_text(json.dumps(st, indent=1, sort_keys=True))
-        if res and row.get("sim_sec"):
-            row.update(throughput_cols(workload, res.get("work"), row["sim_sec"]))
-            row["roi_sec_guest"] = res.get("roi_sec", "")
-    row["guest"] = parse_tagged(text, "GUESTINFO")
-    row.update(parse_tagged(text, "LINUXSTATS"))
-    (outdir / "fs_result.json").write_text(json.dumps(row, indent=1, sort_keys=True))
-    if not res:
-        print(f"WARNING: no RESULT line in {console}; check the guest console output")
+    row = collect(outdir, args.workload)
+    if "checksum" not in row:
+        print(f"WARNING: no RESULT line from the guest; check {outdir / CONSOLE_FILE}")
     print("FS_RESULT " + json.dumps(row, sort_keys=True))
