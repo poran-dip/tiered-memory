@@ -24,8 +24,8 @@ from pathlib import Path
 
 import m5
 from gem5.components.boards.x86_board import X86Board
-from gem5.components.cachehierarchies.classic.private_l1_private_l2_cache_hierarchy import (
-    PrivateL1PrivateL2CacheHierarchy,
+from gem5.components.cachehierarchies.classic.private_l1_private_l2_walk_cache_hierarchy import (
+    PrivateL1PrivateL2WalkCacheHierarchy,
 )
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_switchable_processor import SimpleSwitchableProcessor
@@ -126,7 +126,11 @@ def build_board(args, memory, swap_device=None):
         clk_freq=args.clk,
         processor=processor,
         memory=memory,
-        cache_hierarchy=PrivateL1PrivateL2CacheHierarchy(
+        # The walk-cache variant puts each page-table walker behind an 8 KiB cache. Without it the
+        # walker sits directly on the L2 bus as an uncached requestor, and gem5's classic caches
+        # panic when its page-table-entry write hits a line the L1D holds Modified (seen as soon as
+        # the guest rewrites page tables during the ROI, e.g. while swapping).
+        cache_hierarchy=PrivateL1PrivateL2WalkCacheHierarchy(
             l1d_size=args.l1d, l1i_size=args.l1i, l2_size=args.l2
         ),
     )
