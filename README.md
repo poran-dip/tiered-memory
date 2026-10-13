@@ -48,7 +48,9 @@ workloads/          C++ benchmarks with gem5 ROI markers (shared harness: common
 configs/run.py      gem5 SE config: one workload, configurable DRAM
 configs/sweep.py    gem5 SE sweep over DRAM size -> results/gem5_sweep.csv
 configs/fsboard.py  shared gem5 full-system setup (X86, Ubuntu 24.04, KVM boot, ROI CPU switch)
-configs/a_baseline.py  config A (and C): fast DRAM only, full-system
+configs/a_baseline.py  config A: 512 MiB fast DRAM, full-system
+configs/c_ideal.py  config C: 2.5 GiB fast DRAM (B's total capacity)
+configs/d_swap.py   config D: config A + 2 GiB swap on a second simulated disk
 native/sweep_ram.py real machine: cgroup memory limit with swap, finds the slowdown knee
 native/bench.py     real machine: working-set size sweep
 tiered_memory/      measurement code shared by both sweeps
@@ -143,9 +145,21 @@ The terminal prints the milestones (kernel booted, run script started, ROI begin
 Options:
 
 - `--kvm-no-perf` is needed where the host has no hardware perf counters (WSL2, most VMs; check for `cpu` in `/sys/bus/event_source/devices/`).
-- `--fast-size 2560MiB` turns the same config into config C.
+- `--fast-size` sets the fast DRAM size (A: 512MiB, C: 2560MiB by default).
 - `--max-sim-sec` (default 600) ends a run after that much simulated time with no progress. A guest kernel panic cannot stop gem5 while the KVM CPU runs, so this is what ends a failed run.
+- `--progress-sec` (default 15): during the ROI, print a progress line about every this many wall-clock seconds: simulated time into the ROI, wall time, instructions so far and the current simulation speed (config D adds how much of the swap file has been written). `0` turns it off. Progress lines don't touch the stats.
 - `--interactive` boots to a shell instead of running the workload.
+
+Config C (`configs/c_ideal.py`) and D (`configs/d_swap.py`) take the same options and workload arguments. D adds a 2 GiB swap device the guest sees as `/dev/sdb`, set up by the run script before the workload:
+
+```bash
+third_party/gem5/build/X86/gem5.opt -d m5out/d-chase configs/d_swap.py \
+    --workload chase --kvm-no-perf -- -s 640 -i 1
+```
+
+- `--swap-size` (default 2GiB, B's slow-tier size, so B and D add the same capacity).
+- `--swap-delay` (default 80us): fixed latency per swap-disk request, standing in for an NVMe SSD's 4 KiB random read. gem5's IDE disk is not an NVMe model, so treat D as context for A vs B rather than a calibrated SSD.
+- D needs the disk image rebuilt (`scripts/setup.sh disk`) after this change: it adds a sudoers rule so the guest's unprivileged user can run `mkswap`/`swapon`. If swap setup fails, the run stops before the workload with `SWAP SETUP FAILED` in `guest_output.txt`, rather than silently running as config A. The `guest` entry in `fs_result.json` reports `swap_total_kib`.
 
 Native RAM-limit sweep (needs sudo for the cgroup; run on an otherwise idle machine, since the Linux counters are system-wide):
 

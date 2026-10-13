@@ -30,9 +30,9 @@ machine, writes `results/native_sweep.csv`).
   `stats.txt`, so a new metric can be added later with `--reparse` and no re-simulation.
 - **System-wide counters.** The Linux counters cover the whole machine, so run native sweeps on
   an otherwise idle system.
-- **Full-system runs.** `configs/a_baseline.py` (and later B, C, D) write `fs_result.json` next to
+- **Full-system runs.** `configs/a_baseline.py`, `c_ideal.py`, `d_swap.py` (and later B) write `fs_result.json` next to
   `stats.txt` (rebuild it without gem5: `python3 -m tiered_memory.fsreport <run dir>`): the same gem5 columns as the SE sweep, plus the Linux columns measured inside the
-  guest by `tiered_memory/guest_run.py` and a `guest` entry (kernel, NUMA nodes and their sizes).
+  guest by `tiered_memory/guest_run.py` and a `guest` entry (kernel, memory and swap size, NUMA nodes and their sizes).
   The guest-side Linux and CPU columns cover the whole workload process, as natively; the gem5
   columns cover only the ROI, which runs on the timing or O3 CPU while everything else runs on KVM.
 
@@ -41,5 +41,7 @@ machine, writes `results/native_sweep.csv`).
 - Native IPC (`perf stat`).
 - ROI-only Linux counters. Today they span allocation plus ROI, which is where spill, swap and
   migration mostly happen anyway.
-- The slow tier (config B, needs the SRAT table in the gem5 fork), the swap device, and the PCIe
-  link model. Those columns exist but stay blank or 0 until the corresponding piece is built.
+- The slow tier (config B, needs the SRAT table in the gem5 fork) and the PCIe link model. Those
+  columns exist but stay blank or 0 until the corresponding piece is built.
+- Swap in gem5 (config D) runs on gem5's IDE disk model with a fixed per-request delay
+  (`--swap-delay`), not an NVMe model: latency is configurable, queueing and bandwidth are not.

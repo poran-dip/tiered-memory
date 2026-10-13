@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the disk image the full-system configs boot: a copy of the stock gem5-resources Ubuntu 24.04
-# image with this repo's workloads and guest-side Python added under /opt/tiered-memory.
+# image with this repo's workloads and guest-side Python added under /opt/tiered-memory, and a
+# sudoers rule letting the gem5 user set up swap (config D).
 #
 #   scripts/make_disk.sh            # normally run as `scripts/setup.sh disk`
 #
@@ -81,6 +82,19 @@ for n in $names; do sudo install -m 755 "$BIN_DIR/$n" "$MNT$GUEST_DIR/bin/$n"; d
 sudo cp "$REPO_ROOT"/tiered_memory/*.py "$MNT$GUEST_DIR/tiered_memory/"
 sudo chmod -R a+rX "$MNT$GUEST_DIR"
 sudo sh -c "cd '$REPO_ROOT' && git rev-parse HEAD 2>/dev/null > '$MNT$GUEST_DIR/REPO_COMMIT'" || true
+
+# The run script runs as the image's unprivileged gem5 user. Config D turns /dev/sdb into swap
+# first, so allow exactly these commands without a password (tiered_memory/guest_script.py).
+SUDOERS="$MNT/etc/sudoers.d/tiered-memory"
+printf '%s\n' \
+    '# Added by tiered-memory scripts/make_disk.sh: swap setup for config D.' \
+    'gem5 ALL=(root) NOPASSWD: /usr/sbin/mkswap, /usr/sbin/swapon, /usr/sbin/swapoff' |
+    sudo tee "$SUDOERS" >/dev/null
+sudo chown root:root "$SUDOERS"
+sudo chmod 0440 "$SUDOERS"
+if command -v visudo >/dev/null; then
+    sudo visudo -cf "$SUDOERS" >/dev/null || die "generated $SUDOERS does not parse"
+fi
 ls -l "$MNT$GUEST_DIR/bin"
 
 sudo umount "$MNT"
