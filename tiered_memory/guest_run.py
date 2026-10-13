@@ -8,7 +8,7 @@ passes to the guest through gem5's readfile:
 Everything goes to stdout. The run script tees it to a file and copies that to the host as
 <outdir>/guest_output.txt (gem5 writefile); tiered_memory.fsreport parses three kinds of lines:
 
-    GUESTINFO {...}     kernel, NUMA nodes and their sizes, before the run
+    GUESTINFO {...}     kernel, memory and swap size, NUMA nodes and their sizes, before the run
     RESULT ...          the workload's own result line (tiered_memory.result.parse_result)
     LINUXSTATS {...}    linuxstats delta and CPU columns over the whole run (allocation + ROI)
 
@@ -40,7 +40,7 @@ def _meminfo_kib(path, key):
 
 
 def guest_info(node_dir=NODE_DIR):
-    """Kernel release, MemTotal, and each NUMA node's CPUs and MemTotal (KiB)."""
+    """Kernel release, MemTotal, SwapTotal, and each NUMA node's CPUs and MemTotal (KiB)."""
     nodes = {}
     for d in sorted(Path(node_dir).glob("node[0-9]*")):
         try:
@@ -54,6 +54,7 @@ def guest_info(node_dir=NODE_DIR):
     return {
         "kernel": platform.release(),
         "mem_total_kib": _meminfo_kib("/proc/meminfo", "MemTotal"),
+        "swap_total_kib": _meminfo_kib("/proc/meminfo", "SwapTotal"),
         "nodes": nodes,
     }
 

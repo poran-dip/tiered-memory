@@ -19,7 +19,6 @@ third_party/resources.json); the disk actually booted is the copy with our binar
 """
 
 import json
-import shlex
 import sys
 from pathlib import Path
 
@@ -41,22 +40,25 @@ from gem5.simulate.exit_handler import (
 from gem5.simulate.simulator import Simulator
 from gem5.utils.override import overrides
 from gem5.utils.requires import requires
+from m5.objects import IdeDisk, RawDiskImage
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from tiered_memory.fsreport import CONSOLE_FILE, GUEST_OUTPUT, ROI_MARKER, collect  # noqa: E402
+from tiered_memory.fsreport import CONSOLE_FILE, ROI_MARKER, collect  # noqa: E402
+from tiered_memory.guest_script import run_script  # noqa: E402
 from tiered_memory.workloads import NAMES  # noqa: E402
 
 RESOURCES_JSON = REPO / "third_party/resources.json"
 DEFAULT_DISK = REPO / "third_party/disks/x86-ubuntu-24.04-tm.img"
-GUEST_DIR = "/opt/tiered-memory"  # where make_disk.sh puts bin/ and tiered_memory/ in the image
 
 CPU = {"kvm": CPUTypes.KVM, "atomic": CPUTypes.ATOMIC, "timing": CPUTypes.TIMING, "o3": CPUTypes.O3}
 
 # This Ubuntu kernel drives gem5's IDE disk through libata, so it is sda, not X86Board's
 # default /dev/hda (with hda the guest panics: "Cannot open root device /dev/hda2").
 DISK_DEVICE = "/dev/sda"
+# A second IDE disk (drive device1, primary slave) is the next libata disk.
+SWAP_DEVICE = "/dev/sdb"
 
 TICKS_PER_SEC = 10**12
 
@@ -102,24 +104,11 @@ def _resources():
     return json.loads(RESOURCES_JSON.read_text())
 
 
-def run_script(workload, wl_args):
-    """The shell script the guest runs after boot (gem5 readfile).
+def build_board(args, memory, swap_device=None):
+    """X86 board with a boot-CPU/ROI-CPU switchable core and the run script attached.
 
-    Output goes to the console and to a file that writefile copies into the host outdir. The
-    report reads the file: on the serial console, guest kernel messages (e.g. the gem5_bridge
-    driver logging each open at ROI begin) land in the middle of program output lines.
+    swap_device: guest block device the run script turns into swap before the workload (config D).
     """
-    cmd = shlex.join(["python3", "-m", "tiered_memory.guest_run", workload, *wl_args])
-    return (
-        "#!/bin/bash\n"
-        f"cd {GUEST_DIR}\n"
-        f"{cmd} 2>&1 | tee /tmp/{GUEST_OUTPUT}\n"
-        f"gem5-bridge writefile /tmp/{GUEST_OUTPUT} {GUEST_OUTPUT}\n"
-    )
-
-
-def build_board(args, memory):
-    """X86 board with a boot-CPU/ROI-CPU switchable core and the run script attached."""
     kvm = args.boot_cpu == "kvm"
     requires(isa_required=ISA.X86, kvm_required=kvm)
 
@@ -159,11 +148,31 @@ def build_board(args, memory):
             local_path=str(disk),
             root_partition=res.get("disk_root_partition", res["root_partition"]),
         ),
-        readfile_contents=run_script(args.workload, args.wl_args),
+        readfile_contents=run_script(args.workload, args.wl_args, swap_device=swap_device),
         kernel_args=kernel_args,
         disk_device=DISK_DEVICE,
     )
     return board
+
+
+def add_swap_disk(board, image_path, delay):
+    """Attach a second IDE disk (the guest sees /dev/sdb) backed by image_path, for swap.
+
+    gem5's IDE disk adds a fixed `delay` per request on top of the modelled DMA transfer; the root
+    disk keeps gem5's default (1us) so booting is not slowed. Writes go straight to image_path, a
+    sparse file, so swapping does not grow gem5's memory.
+    Call after build_board(): X86Board sets up the root disk in set_kernel_disk_workload.
+    """
+    swap = IdeDisk(driveID="device1", delay=delay)
+    swap.image = RawDiskImage(image_file=str(image_path), read_only=False)
+    ide = board.pc.south_bridge.ide
+    disks = list(ide.disks)
+    # X86Board made its [root disk] list a child of the controller. gem5 will not re-parent a list
+    # that already has a parent (it only warns, and the new disk would stay orphaned), so detach
+    # the old list first and assign the two-disk list fresh.
+    ide.clear_child("disks")
+    ide.disks = disks + [swap]
+    return SWAP_DEVICE
 
 
 def _sim_sec():
