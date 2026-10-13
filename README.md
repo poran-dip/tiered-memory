@@ -126,14 +126,26 @@ third_party/gem5/build/X86/gem5.opt -d m5out/stream configs/run.py \
     --binary workloads/build/m5/stream --mem-size 64MiB -- -s 8 -i 2
 ```
 
-A full-system run (config A, 512 MiB fast DRAM; outputs `stats.txt`, `roi_stats.json`, `fs_result.json` and the guest console `board.pc.com_1.device`):
+A full-system run (config A, 512 MiB fast DRAM):
 
 ```bash
 third_party/gem5/build/X86/gem5.opt -d m5out/a-chase configs/a_baseline.py \
     --workload chase --kvm-no-perf -- -s 64 -i 1
 ```
 
-`--kvm-no-perf` is needed where the host has no hardware perf counters (WSL2, most VMs; check for `cpu` in `/sys/bus/event_source/devices/`). `--fast-size 2560MiB` turns the same config into config C. `--interactive` boots to a shell instead of running the workload.
+The terminal prints the milestones (kernel booted, run script started, ROI begin/end) and a final `FS_RESULT {...}` line. With KVM the boot takes a few seconds of simulated time. Outputs in the `-d` directory:
+
+- `fs_result.json`: the report (gem5 ROI columns, guest Linux columns, `guest` kernel and NUMA nodes). Rebuild it without gem5: `python3 -m tiered_memory.fsreport m5out/a-chase`.
+- `stats.txt`: block 1 is the ROI (all of it is in `roi_stats.json`); `roi_done` marks that the ROI completed.
+- `guest_output.txt`: the guest's program output, copied out with gem5's `writefile`.
+- `board.pc.com_1.device`: the guest's serial console, i.e. the boot log. Look here first when a run stops early.
+
+Options:
+
+- `--kvm-no-perf` is needed where the host has no hardware perf counters (WSL2, most VMs; check for `cpu` in `/sys/bus/event_source/devices/`).
+- `--fast-size 2560MiB` turns the same config into config C.
+- `--max-sim-sec` (default 600) ends a run after that much simulated time with no progress. A guest kernel panic cannot stop gem5 while the KVM CPU runs, so this is what ends a failed run.
+- `--interactive` boots to a shell instead of running the workload.
 
 Native RAM-limit sweep (needs sudo for the cgroup; run on an otherwise idle machine, since the Linux counters are system-wide):
 

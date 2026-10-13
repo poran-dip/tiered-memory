@@ -29,6 +29,8 @@ info = {
     "kernel": kernel.get_local_path(),  # downloads if needed
     "disk_id": f"{disk.get_id()}@{disk.get_resource_version()}",
     "base_disk": disk.get_local_path(),
+    # Metadata only; it is wrong for x86-ubuntu-24.04-img 4.0.0 (says 1, root is 2).
+    # scripts/make_disk.sh detects the real one and records it as disk_root_partition.
     "root_partition": disk.get_root_partition(),
 }
 OUT.parent.mkdir(parents=True, exist_ok=True)

@@ -105,8 +105,9 @@ def _resources():
 def run_script(workload, wl_args):
     """The shell script the guest runs after boot (gem5 readfile).
 
-    Output goes to the console and to a file that writefile copies into the host outdir, because
-    gem5 only flushes the console file when it exits, after the report has been built.
+    Output goes to the console and to a file that writefile copies into the host outdir. The
+    report reads the file: on the serial console, guest kernel messages (e.g. the gem5_bridge
+    driver logging each open at ROI begin) land in the middle of program output lines.
     """
     cmd = shlex.join(["python3", "-m", "tiered_memory.guest_run", workload, *wl_args])
     return (
