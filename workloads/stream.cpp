@@ -10,10 +10,21 @@ int main(int argc, char** argv) {
         B[i] = r.unit();
         C[i] = r.unit();
     }
+    // -d 1 sweeps backwards. Same result and checksum, but a different paging story once the arrays
+    // exceed RAM: setup fills them front to back, so the front is coldest and gets swapped out.
+    // A forward ROI pass starts on that swapped front, and each page it faults in evicts the oldest
+    // resident page, which is the one it needs next, so nearly every page cycles through swap. A
+    // backward pass starts on the resident end and reaches the swapped front last, evicting pages
+    // it has already finished with, so only the overflow is swapped in.
     roi_begin();
-    for (int it = 0; it < a.iters; it++)
-        for (size_t i = 0; i < n; i++)
-            A[i] = B[i] + 3.0 * C[i];
+    for (int it = 0; it < a.iters; it++) {
+        if (a.reverse)
+            for (size_t i = n; i-- > 0;)
+                A[i] = B[i] + 3.0 * C[i];
+        else
+            for (size_t i = 0; i < n; i++)
+                A[i] = B[i] + 3.0 * C[i];
+    }
     double sec = roi_end();
     double s = 0;
     for (size_t i = 0; i < n; i += 97)
