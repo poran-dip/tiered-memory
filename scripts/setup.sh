@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
-# Fetch gem5 at a pinned commit, build it and its m5 library, then build the workloads.
+# Fetch gem5 at a pinned commit, build it and its m5 library, build the workloads, then fetch the
+# full-system kernel and disk image and add the workloads to a copy of the disk.
 #
 #   scripts/setup.sh                 # everything
 #   scripts/setup.sh fetch           # only clone/check out gem5
-#   scripts/setup.sh fetch m5 wl     # any subset of: fetch gem5 m5 wl
+#   scripts/setup.sh fetch m5 wl     # any subset of: fetch gem5 m5 wl resources disk
+#
+# resources: downloads the pinned Ubuntu 24.04 kernel + disk (configs/fetch_resources.py) and
+#            writes their paths to third_party/resources.json.
+# disk:      rebuilds third_party/disks/x86-ubuntu-24.04-tm.img with the m5-fs workloads
+#            (scripts/make_disk.sh, needs sudo). Rerun after changing workloads/ or tiered_memory/.
 #
 # Overrides: GEM5_REPO, GEM5_REF (commit to pin), GEM5_DIR, JOBS.
 # gem5 is not committed to this repo; GEM5_REF is the reproducibility pin, so bump it
@@ -52,20 +58,33 @@ build_m5() {
 }
 
 build_workloads() {
-    log "Building workloads (gem5 and native)"
-    make -C "$REPO_ROOT/workloads" GEM5="$GEM5_DIR" m5 native
+    log "Building workloads (gem5 SE, gem5 full-system and native)"
+    make -C "$REPO_ROOT/workloads" GEM5="$GEM5_DIR" m5 m5-fs native
+}
+
+fetch_resources() {
+    log "Fetching the full-system kernel and disk image from gem5-resources"
+    "$GEM5_DIR/build/X86/gem5.opt" -d "$REPO_ROOT/third_party/m5out-resources" \
+        "$REPO_ROOT/configs/fetch_resources.py"
+}
+
+build_disk() {
+    make -C "$REPO_ROOT/workloads" GEM5="$GEM5_DIR" m5-fs
+    "$REPO_ROOT/scripts/make_disk.sh"
 }
 
 steps=("$@")
-[ ${#steps[@]} -eq 0 ] && steps=(fetch gem5 m5 wl)
+[ ${#steps[@]} -eq 0 ] && steps=(fetch gem5 m5 wl resources disk)
 for s in "${steps[@]}"; do
     case "$s" in
         fetch) fetch_gem5 ;;
         gem5) build_gem5 ;;
         m5) build_m5 ;;
         wl) build_workloads ;;
+        resources) fetch_resources ;;
+        disk) build_disk ;;
         *)
-            echo "unknown step: $s (expected fetch, gem5, m5 or wl)" >&2
+            echo "unknown step: $s (expected fetch, gem5, m5, wl, resources or disk)" >&2
             exit 2
             ;;
     esac

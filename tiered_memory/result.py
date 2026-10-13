@@ -1,5 +1,7 @@
 """Parsing of the RESULT line every workload prints, plus throughput derived from it."""
 
+import json
+
 from .workloads import WORK_UNIT
 
 
@@ -12,6 +14,24 @@ def parse_result(text):
     if last is None:
         return {}
     return dict(kv.split("=", 1) for kv in last.split()[1:] if "=" in kv)
+
+
+def parse_tagged(text, tag):
+    """JSON payload of the last '<tag> {...}' line in text, or {} (see tiered_memory.guest_run).
+
+    Full-system output arrives through the guest's serial console, so lines may end in '\\r'.
+    """
+    last = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith(tag + " "):
+            last = line[len(tag) + 1 :]
+    if last is None:
+        return {}
+    try:
+        return json.loads(last)
+    except ValueError:
+        return {}
 
 
 def throughput_cols(name, work, seconds):

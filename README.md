@@ -39,19 +39,22 @@ CXL is the inspiration, not the target. There is no custom page-placement algori
 | 4     | PCIe modeling: bandwidth, latency, transaction overhead  |        |
 | 5     | Analysis: whether and when B beats A                     |        |
 
-The gem5 side currently runs in syscall-emulation (SE) mode with a single DRAM channel. SE mode has no OS, so NUMA placement, paging, swap and migration only appear once Phase 1 moves to full-system mode.
+The gem5 sweep (`configs/sweep.py`) runs in syscall-emulation (SE) mode with a single DRAM channel. SE mode has no OS, so NUMA placement, paging, swap and migration need full-system mode. Phase 1 adds it: `configs/a_baseline.py` boots the stock Ubuntu 24.04 kernel on X86 with config A's fast DRAM. Config B needs gem5 to describe the second NUMA node to Linux (an ACPI SRAT table), which comes next in the gem5 fork.
 
 ## Repo layout
 
 ```
 workloads/          C++ benchmarks with gem5 ROI markers (shared harness: common.h)
-configs/run.py      gem5 config: one workload, configurable DRAM
-configs/sweep.py    gem5 sweep over DRAM size -> results/gem5_sweep.csv
+configs/run.py      gem5 SE config: one workload, configurable DRAM
+configs/sweep.py    gem5 SE sweep over DRAM size -> results/gem5_sweep.csv
+configs/fsboard.py  shared gem5 full-system setup (X86, Ubuntu 24.04, KVM boot, ROI CPU switch)
+configs/a_baseline.py  config A (and C): fast DRAM only, full-system
 native/sweep_ram.py real machine: cgroup memory limit with swap, finds the slowdown knee
 native/bench.py     real machine: working-set size sweep
 tiered_memory/      measurement code shared by both sweeps
 tests/              pytest suite for tiered_memory/ and the sweeps
-scripts/setup.sh    fetches gem5 at a pinned commit and builds everything
+scripts/setup.sh    fetches gem5 at a pinned commit, builds everything, prepares the FS disk
+scripts/make_disk.sh  copies the Ubuntu disk image and adds the workloads (needs sudo)
 docs/               measurements.md, literature-review.md
 results/            committed result CSVs (native_sweep.csv, gem5_sweep.csv, ...)
 findings/           what the results show, one numbered file per finding
@@ -88,12 +91,16 @@ gem5 is not committed to this repo. `scripts/setup.sh` clones it into `third_par
 ```bash
 scripts/setup.sh                # everything (the gem5 build takes a while)
 scripts/setup.sh fetch          # only fetch gem5 at the pinned commit
-scripts/setup.sh m5 wl          # any subset of: fetch gem5 m5 wl
+scripts/setup.sh m5 wl          # any subset of: fetch gem5 m5 wl resources disk
 ```
 
 `GEM5_REF` is the reproducibility pin for every result: change it deliberately, and override it for a one-off with `GEM5_REF=<commit> scripts/setup.sh`. `GEM5_REPO`, `GEM5_DIR` and `JOBS` can be overridden the same way.
 
-The workloads build into `workloads/build/m5/` (static, with ROI markers, for gem5) and `workloads/build/native/` (for real-machine runs).
+The workloads build into `workloads/build/m5/` (static, with ROI markers, for gem5 SE mode), `workloads/build/m5-fs/` (static, ROI markers as address-mode hypercalls, for gem5 full-system) and `workloads/build/native/` (for real-machine runs).
+
+Full-system runs also need the guest kernel and disk. `scripts/setup.sh resources` downloads the pinned gem5-resources Ubuntu 24.04 kernel and disk image (pinned in `configs/fetch_resources.py`) and records their paths in `third_party/resources.json`. `scripts/setup.sh disk` copies the disk to `third_party/disks/x86-ubuntu-24.04-tm.img` and installs the `m5-fs` workloads and `tiered_memory/` under `/opt/tiered-memory`; rerun it after changing either. The stock image is never modified.
+
+KVM makes the boot take seconds instead of hours. Your user needs read/write access to `/dev/kvm` (`sudo usermod -aG kvm $USER`, then log in again; on WSL2 run `wsl --shutdown` from Windows). Without KVM, pass `--boot-cpu atomic`.
 
 Python tooling (tests, sweeps outside gem5):
 
@@ -118,6 +125,15 @@ A single gem5 run:
 third_party/gem5/build/X86/gem5.opt -d m5out/stream configs/run.py \
     --binary workloads/build/m5/stream --mem-size 64MiB -- -s 8 -i 2
 ```
+
+A full-system run (config A, 512 MiB fast DRAM; outputs `stats.txt`, `roi_stats.json`, `fs_result.json` and the guest console `board.pc.com_1.device`):
+
+```bash
+third_party/gem5/build/X86/gem5.opt -d m5out/a-chase configs/a_baseline.py \
+    --workload chase --kvm-no-perf -- -s 64 -i 1
+```
+
+`--kvm-no-perf` is needed where the host has no hardware perf counters (WSL2, most VMs; check for `cpu` in `/sys/bus/event_source/devices/`). `--fast-size 2560MiB` turns the same config into config C. `--interactive` boots to a shell instead of running the workload.
 
 Native RAM-limit sweep (needs sudo for the cgroup; run on an otherwise idle machine, since the Linux counters are system-wide):
 

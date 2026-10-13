@@ -1,44 +1,32 @@
-import os
+"""Config A, baseline: one node of fast DRAM only (scaled: 512 MiB for the brief's 8 GB).
 
-from gem5.components.boards.arm_board import ArmBoard
-from gem5.components.cachehierarchies.classic.private_l1_private_l2_cache_hierarchy import (
-    PrivateL1PrivateL2CacheHierarchy,
-)
-from gem5.components.memory import SingleChannelDDR4_2400
-from gem5.components.processors.cpu_types import CPUTypes
-from gem5.components.processors.simple_processor import SimpleProcessor
-from gem5.isas import ISA
-from gem5.resources.resource import CustomDiskImageResource, CustomResource
-from gem5.simulate.simulator import Simulator
-from gem5.utils.requires import requires
-from m5.objects import ArmDefaultRelease, VExpress_GEM5_V1
+gem5 full-system, X86, stock Ubuntu 24.04 kernel and disk. Shared setup is in configs/fsboard.py.
 
-requires(isa_required=ISA.ARM)
+  third_party/gem5/build/X86/gem5.opt -d m5out/a-chase configs/a_baseline.py \\
+      --workload chase --kvm-no-perf -- -s 64 -i 1
 
-cache = PrivateL1PrivateL2CacheHierarchy(l1d_size="32KiB", l1i_size="32KiB", l2_size="256KiB")
+Config C (ideal upper bound, all fast) is this config with --fast-size 2560MiB.
+Outputs in the -d directory: stats.txt (block 1 = ROI), roi_stats.json, fs_result.json, and the
+guest console in board.pc.com_1.device.
+"""
 
-# Config A: one fast memory region (512MiB for testing; change to 8GiB later)
-memory = SingleChannelDDR4_2400(size="512MiB")
+import argparse
+import sys
+from pathlib import Path
 
-processor = SimpleProcessor(cpu_type=CPUTypes.ATOMIC, isa=ISA.ARM, num_cores=1)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-board = ArmBoard(
-    clk_freq="3GHz",
-    processor=processor,
-    memory=memory,
-    cache_hierarchy=cache,
-    release=ArmDefaultRelease(),
-    platform=VExpress_GEM5_V1(),
-)
+from fsboard import add_common_args, build_board, run  # noqa: E402
+from gem5.components.memory.single_channel import SingleChannelDDR4_2400  # noqa: E402
 
-files = os.path.expanduser("~/gem5-files")
+from tiered_memory.layout import DEFAULT_FAST, format_size, layout  # noqa: E402
 
-board.set_kernel_disk_workload(
-    kernel=CustomResource(f"{files}/newbin/binaries/vmlinux.arm64"),
-    bootloader=CustomResource(f"{files}/newbin/binaries/boot.arm64"),
-    disk_image=CustomDiskImageResource(
-        f"{files}/ubuntu-18.04-arm64-docker.img", root_partition="1"
-    ),
-)
+p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+p.add_argument("--fast-size", default=DEFAULT_FAST, help="node 0 fast DRAM (DDR4-2400)")
+add_common_args(p)
+args = p.parse_args()
 
-Simulator(board=board).run()
+(fast,) = layout(args.fast_size)  # validates the size and that it fits below the I/O hole
+memory = SingleChannelDDR4_2400(size=format_size(fast.size))
+board = build_board(args, memory)
+run(board, args)
