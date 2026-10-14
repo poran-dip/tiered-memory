@@ -109,7 +109,7 @@ def test_claim_refuses_earlier_outputs_unless_overwrite(tmp_path):
     err = claim_outdir(tmp_path)
     assert err and "--overwrite" in err
     assert claim_outdir(tmp_path, overwrite=True) is None
-    for name in (ROI_MARKER, FS_RESULT, ROI_STATS, GUEST_OUTPUT, RUN_INFO, "stats.txt"):
+    for name in (ROI_MARKER, FS_RESULT, ROI_STATS, GUEST_OUTPUT, RUN_INFO):
         assert not (tmp_path / name).exists()  # a stale roi_done would fake a finished ROI
     assert (tmp_path / PID_FILE).read_text().strip() == str(os.getpid())
 

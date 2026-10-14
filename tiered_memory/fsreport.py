@@ -48,7 +48,7 @@ FS_CSV = RESULTS / "gem5_fs.csv"
 
 # Outputs of an earlier run that would be mistaken for this run's if left in place: a stale
 # roi_done in particular makes an unfinished run look complete.
-STALE_OUTPUTS = (ROI_MARKER, ROI_STATS, FS_RESULT, GUEST_OUTPUT, RUN_INFO, "stats.txt")
+STALE_OUTPUTS = (ROI_MARKER, ROI_STATS, FS_RESULT, GUEST_OUTPUT, RUN_INFO)
 
 
 def roi_completed(outdir):
