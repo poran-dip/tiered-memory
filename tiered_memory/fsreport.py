@@ -134,13 +134,13 @@ def collect(outdir, workload=None):
         st = roi_stats(outdir)
         row.update(summarize(st))
         if sp.exists():
-            (outdir / ROI_STATS).write_text(json.dumps(st, indent=1, sort_keys=True))
+            (outdir / ROI_STATS).write_text(json.dumps(st, indent=1, sort_keys=True) + "\n")
         if res and row.get("sim_sec"):
             row.update(throughput_cols(workload, res.get("work"), row["sim_sec"]))
             row["roi_sec_guest"] = res.get("roi_sec", "")
     row["guest"] = parse_tagged(text, "GUESTINFO")
     row.update(parse_tagged(text, "LINUXSTATS"))
-    (outdir / FS_RESULT).write_text(json.dumps(row, indent=1, sort_keys=True))
+    (outdir / FS_RESULT).write_text(json.dumps(row, indent=1, sort_keys=True) + "\n")
     return row
 
 
