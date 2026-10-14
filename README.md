@@ -51,6 +51,7 @@ configs/fsboard.py  shared gem5 full-system setup (X86, Ubuntu 24.04, KVM boot, 
 configs/a_baseline.py  config A: 512 MiB fast DRAM, full-system
 configs/c_ideal.py  config C: 2.5 GiB fast DRAM (B's total capacity)
 configs/d_swap.py   config D: config A + 2 GiB swap on a second simulated disk
+scripts/fs_runs.sh  runs the committed full-system set into results/fs/ (parallel with -j)
 native/sweep_ram.py real machine: cgroup memory limit with swap, finds the slowdown knee
 native/bench.py     real machine: working-set size sweep
 tiered_memory/      measurement code shared by both sweeps
@@ -131,13 +132,31 @@ third_party/gem5/build/X86/gem5.opt -d m5out/stream configs/run.py \
 A full-system run (config A, 512 MiB fast DRAM):
 
 ```bash
-third_party/gem5/build/X86/gem5.opt -d m5out/a-chase configs/a_baseline.py \
+third_party/gem5/build/X86/gem5.opt -d results/fs/a-chase-64 configs/a_baseline.py \
     --workload chase --kvm-no-perf -- -s 64 -i 1
+```
+
+Runs whose `-d` directory is under `results/fs/` are the ones kept in git: each also adds a row to `results/gem5_fs.csv`, and `results/fs/.gitignore` keeps only the small files (`fs_result.json`, `roi_stats.json`, `guest_output.txt`, `run.json`). Use any other directory (e.g. `m5out/`) for scratch runs. `scripts/fs_runs.sh` runs the whole committed set, skipping runs that are already done:
+
+```bash
+scripts/fs_runs.sh -n            # list what would run
+scripts/fs_runs.sh -j 3          # run, up to 3 gem5 processes at once
+scripts/fs_runs.sh 'stream-448'  # only runs whose name matches
+python3 -m tiered_memory.fsreport --csv results/gem5_fs.csv results/fs/*/   # rebuild the CSV
+```
+
+`configs/run_all_working_sets.py` runs every workload at each of its working-set tiers under configs A, C and D, into `results/fs/<config>-<workload>-<tier>-<MiB>`. The tiers (sizes in `tiered_memory/workloads.py`, `FS_TIERS`) are **fits** (a sanity size, at most 64 MiB), **near** (just fits in config A, 336–384 MiB) and **over** (past config A's capacity, 448 MiB). The fits tier runs first, then everything else longest-first, with a per-run wall-time cap:
+
+```bash
+python3 configs/run_all_working_sets.py -n -j 3      # list the runs and the time estimate
+python3 configs/run_all_working_sets.py -j 3         # run them (finished runs are skipped)
+python3 configs/run_all_working_sets.py --tiers fits # only the sanity sizes
 ```
 
 The terminal prints the milestones (kernel booted, run script started, ROI begin/end) and a final `FS_RESULT {...}` line. With KVM the boot takes a few seconds of simulated time. Outputs in the `-d` directory:
 
-- `fs_result.json`: the report (gem5 ROI columns, guest Linux columns, `guest` kernel and NUMA nodes). Rebuild it without gem5: `python3 -m tiered_memory.fsreport m5out/a-chase`.
+- `fs_result.json`: the report (gem5 ROI columns, guest Linux columns, `guest` kernel and NUMA nodes). Rebuild it without gem5: `python3 -m tiered_memory.fsreport results/fs/a-chase-64` (works from `roi_stats.json` when `stats.txt` is absent, as in a fresh clone).
+- `run.json`: how the run was started: config, workload arguments, config settings, gem5 and repo commits, host CPU/kernel/RAM, start time and wall time.
 - `stats.txt`: block 1 is the ROI (all of it is in `roi_stats.json`); `roi_done` marks that the ROI completed.
 - `guest_output.txt`: the guest's program output, copied out with gem5's `writefile`.
 - `board.pc.com_1.device`: the guest's serial console, i.e. the boot log. Look here first when a run stops early.
@@ -148,12 +167,13 @@ Options:
 - `--fast-size` sets the fast DRAM size (A: 512MiB, C: 2560MiB by default).
 - `--max-sim-sec` (default 600) ends a run after that much simulated time with no progress. A guest kernel panic cannot stop gem5 while the KVM CPU runs, so this is what ends a failed run.
 - `--progress-sec` (default 15): during the ROI, print a progress line about every this many wall-clock seconds: simulated time into the ROI, wall time, instructions so far and the current simulation speed (config D adds how much of the swap file has been written). `0` turns it off. Progress lines don't touch the stats.
+- `--overwrite` replaces an earlier run's outputs in the `-d` directory. Without it a run refuses to start there, and it always refuses a directory another gem5 process is still writing to.
 - `--interactive` boots to a shell instead of running the workload.
 
 Config C (`configs/c_ideal.py`) and D (`configs/d_swap.py`) take the same options and workload arguments. D adds a 2 GiB swap device the guest sees as `/dev/sdb`, set up by the run script before the workload:
 
 ```bash
-third_party/gem5/build/X86/gem5.opt -d m5out/d-chase configs/d_swap.py \
+third_party/gem5/build/X86/gem5.opt -d m5out/d-chase-640 configs/d_swap.py \
     --workload chase --kvm-no-perf -- -s 640 -i 1
 ```
 

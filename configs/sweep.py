@@ -47,7 +47,7 @@ def collect(row, od, log, slow_pattern):
         return
     st = roi_block(sp)
     row.update(summarize(st, slow_pattern))
-    Path(od, "roi_stats.json").write_text(json.dumps(st, indent=1, sort_keys=True))
+    Path(od, "roi_stats.json").write_text(json.dumps(st, indent=1, sort_keys=True) + "\n")
     # Time and work for throughput come from the simulator, not the guest's emulated clock.
     if res and row.get("sim_sec"):
         row.update(throughput_cols(row["workload"], res.get("work"), row["sim_sec"]))

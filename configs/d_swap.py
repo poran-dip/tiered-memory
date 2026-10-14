@@ -6,7 +6,7 @@ into swap before the workload starts. Swap size defaults to config B's slow-tier
 add the same capacity and differ only in where it lives (PCIe DRAM vs storage). Shared setup is in
 configs/fsboard.py; see configs/a_baseline.py for outputs.
 
-  third_party/gem5/build/X86/gem5.opt -d m5out/d-chase configs/d_swap.py \\
+  third_party/gem5/build/X86/gem5.opt -d results/fs/d-chase-64 configs/d_swap.py \\
       --workload chase --kvm-no-perf -- -s 64 -i 1
 
 The swap disk's per-request delay (--swap-delay, default 80us) stands in for an NVMe SSD's 4 KiB
@@ -22,7 +22,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import m5  # noqa: E402
-from fsboard import SWAP_DEVICE, add_common_args, add_swap_disk, build_board, run  # noqa: E402
+from fsboard import (  # noqa: E402
+    SWAP_DEVICE,
+    add_common_args,
+    add_swap_disk,
+    build_board,
+    parse_args,
+    run,
+)
 from gem5.components.memory.single_channel import SingleChannelDDR4_2400  # noqa: E402
 
 from tiered_memory.layout import (  # noqa: E402
@@ -49,7 +56,7 @@ p.add_argument(
     help="fixed latency per swap-disk request (gem5 IdeDisk.delay); ~NVMe 4 KiB random read",
 )
 add_common_args(p)
-args = p.parse_args()
+args = parse_args(p)
 
 (fast,) = layout(args.fast_size)  # validates the size and that it fits below the I/O hole
 swap_bytes = parse_size(args.swap_size)
@@ -81,4 +88,14 @@ def swap_written():
     return f"swap file {used / MiB:.0f} MiB written"
 
 
-run(board, args, progress_extra=swap_written)
+run(
+    board,
+    args,
+    "D",
+    settings={
+        "fast_size": format_size(fast.size),
+        "swap_size": format_size(swap_bytes),
+        "swap_delay": args.swap_delay,
+    },
+    progress_extra=swap_written,
+)

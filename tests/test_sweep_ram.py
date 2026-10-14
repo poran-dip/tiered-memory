@@ -68,3 +68,21 @@ def test_descend_reports_failed_baseline(tmp_path, monkeypatch):
     rows = results.new
     assert all(r["bottleneck"] == "baseline failed" for r in rows)
     assert len(calls) == 2  # never goes on to limited runs
+
+
+def test_run_passes_extra_workload_args_and_records_them(monkeypatch):
+    seen = {}
+
+    def fake_subprocess_run(cmd, **kw):
+        seen["cmd"] = cmd
+        return SimpleNamespace(
+            returncode=0,
+            stdout="RESULT name=stream ws_mb=448 iters=1 roi_sec=0.5 work=100 checksum=9\n",
+        )
+
+    monkeypatch.setattr(sweep_ram.subprocess, "run", fake_subprocess_run)
+    row = sweep_ram.run("bin/stream", 448, 1, 42, None, 10, ["-d", "1"])
+    assert seen["cmd"][-2:] == ["-d", "1"]
+    assert row["wl_args"] == "-d 1"
+    assert row["iters"] == 1
+    assert "host_cpu" in row

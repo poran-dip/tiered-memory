@@ -18,7 +18,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GEM5_REPO="${GEM5_REPO:-https://github.com/poran-dip/gem5.git}"
-GEM5_REF="${GEM5_REF:-f5c5a6e390f55dd5984977815bf9d0bd05da6945}"
+GEM5_REF="${GEM5_REF:-618cf87d11c91cb2b4ca763b7a647b8e3cefe9fe}"
 GEM5_DIR="${GEM5_DIR:-$REPO_ROOT/third_party/gem5}"
 JOBS="${JOBS:-$(nproc)}"
 

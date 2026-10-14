@@ -29,6 +29,36 @@ WORKLOADS = {
     "hashjoin": Workload("tuples", "database (OLAP)", 64, 4, 8, 1),
 }
 
+
+class Tier(NamedTuple):
+    ws: int  # MiB (-s)
+    iters: int  # -i
+    est_minsts: int  # estimated ROI instructions, millions (see below)
+
+
+# Full-system working-set tiers, against config A's fast tier (512 MiB; the guest has MemTotal
+# 459 MiB and a workload gets at least ~386 MiB but less than 448, finding 002 F8):
+#   fits  sanity size, far below capacity and far above the 256 KiB L2; A, C and D should agree
+#   near  just fits in A: 384 MiB ran with no swap (chase 336: its setup needs 12.5% extra)
+#   over  past A's capacity: 448 MiB overflowed by 30-60 MiB
+# None = not meaningful for that workload. gemm is the compute control (work grows as N^3), so it
+# only has a fits size. kvstore's table rounds down to a power of two (any -s from 256 to 511 gives
+# a 256 MiB table), so near and over wait for a sizing fix. kvdecode over cap runs 2 tokens: the
+# first reads every page once; only from the second does LRU evict pages just before reuse.
+# est_minsts: ROI instructions counted with callgrind on the same gcc 13.3 -O2 build (within
+# ~1.3x of gem5's own count for chase and stream), excluding any paging work.
+FS_TIERS = {
+    "stream": {"fits": Tier(64, 1, 11), "near": Tier(384, 1, 67), "over": Tier(448, 1, 78)},
+    "chase": {"fits": Tier(64, 1, 6), "near": Tier(336, 1, 33), "over": Tier(448, 1, 44)},
+    "kvdecode": {"fits": Tier(64, 1, 29), "near": Tier(384, 1, 175), "over": Tier(448, 2, 409)},
+    "hashjoin": {"fits": Tier(64, 1, 113), "near": Tier(384, 1, 678), "over": Tier(448, 1, 791)},
+    "graph": {"fits": Tier(64, 1, 201), "near": Tier(384, 1, 1205), "over": Tier(448, 1, 1406)},
+    "kvstore": {"fits": Tier(64, 1, 298), "near": None, "over": None},
+    "sort": {"fits": Tier(32, 1, 321), "near": Tier(384, 1, 4504), "over": Tier(448, 1, 5302)},
+    "gemm": {"fits": Tier(1, 1, 198), "near": None, "over": None},
+}
+TIERS = ("fits", "near", "over")
+
 NAMES = list(WORKLOADS)
 WORK_UNIT = {k: w.work_unit for k, w in WORKLOADS.items()}
 NATIVE_WS = {k: w.native_ws for k, w in WORKLOADS.items()}

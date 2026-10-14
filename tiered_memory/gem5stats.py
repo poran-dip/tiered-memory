@@ -52,6 +52,32 @@ def memory_controllers(st):
     return {p: v for p, v in found.items() if not any(q.startswith(p + ".") for q in found)}
 
 
+_IDLE = (".idleCycles", ".numIdleCycles")
+
+# The IDE controller's DMA goes through the I/O cache in whole cache lines: a WriteLineReq per
+# line read from disk into memory, a ReadReq per line read from memory to go to disk.
+_IDE_IN = re.compile(r"iocache\.WriteLineReq\.accesses::.*\bide$")
+_IDE_OUT = re.compile(r"iocache\.ReadReq\.accesses::.*\bide$")
+CACHE_LINE = 64
+
+
+def disk_dma(st):
+    """Bytes the IDE disks moved during the ROI: disk -> memory (in) and memory -> disk (out).
+
+    Counted at the I/O cache, so it is the ROI alone, unlike the guest's /proc/vmstat counters,
+    which cover the whole process. In config D, during the ROI, this is swap traffic. Blank when
+    the stats have no I/O cache (SE mode); 0 when the disks were idle.
+    """
+    if not any(k.startswith(("board.cache_hierarchy.iocache.", "system.iocache.")) for k in st):
+        return {"disk_in_bytes": "", "disk_out_bytes": ""}
+    lines_in = sum(v for k, v in st.items() if _IDE_IN.search(k))
+    lines_out = sum(v for k, v in st.items() if _IDE_OUT.search(k))
+    return {
+        "disk_in_bytes": int(lines_in * CACHE_LINE),
+        "disk_out_bytes": int(lines_out * CACHE_LINE),
+    }
+
+
 def _total(st, suffix):
     return sum(v for k, v in st.items() if k.endswith(suffix))
 
@@ -85,13 +111,15 @@ def summarize(st, slow_pattern=SLOW_TIER_PATTERN):
         "insts": insts,
         "cycles": cycles,
         "ipc": round(insts / cycles, 4) if cycles else "",
-        # share of cycles the CPU was not idle; only reported if the CPU model exposes idleCycles
+        # share of cycles the CPU was not idle; only reported if the CPU model counts idle cycles
+        # (as idleCycles, or numIdleCycles under exec_context.thread_N for the timing CPU)
         "cpu_busy_frac": (
-            round(1 - _total(st, ".idleCycles") / cycles, 4)
-            if cycles and _has(st, ".idleCycles")
+            round(1 - sum(_total(st, s) for s in _IDLE) / cycles, 4)
+            if cycles and any(_has(st, s) for s in _IDLE)
             else ""
         ),
         "l2_misses": sum(l2m) if l2m else "",
+        **disk_dma(st),
     }
 
     ctrls = memory_controllers(st)

@@ -1,0 +1,8 @@
+# One directory per committed gem5 full-system run (gem5 -d results/fs/<run>).
+# Keep the report, the ROI stats, the guest's output and how the run was started; the rest
+# (stats.txt, config.*, the serial console, the sparse swap image) is large or regenerated.
+/*/*
+!/*/fs_result.json
+!/*/roi_stats.json
+!/*/guest_output.txt
+!/*/run.json
