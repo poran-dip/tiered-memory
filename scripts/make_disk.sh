@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Build the disk image the full-system configs boot: a copy of the stock gem5-resources Ubuntu 24.04
-# image with this repo's workloads and guest-side Python added under /opt/tiered-memory, and a
-# sudoers rule letting the gem5 user set up swap (config D).
+# image with this repo's workloads and guest-side Python added under /opt/tiered-memory, numactl
+# (to bind a workload to one memory node when checking config B), and a sudoers rule letting the
+# gem5 user set up swap (config D).
 #
 #   scripts/make_disk.sh            # normally run as `scripts/setup.sh disk`
 #
 # Needs: third_party/resources.json (scripts/setup.sh resources), workloads/build/m5-fs/ built
-# (make -C workloads m5-fs), and sudo for losetup/mount. The stock image is never modified.
+# (make -C workloads m5-fs), and sudo for losetup/mount. The numactl packages are downloaded once
+# with apt-get download into third_party/debs/ (the host is the same Ubuntu 24.04 release as the
+# guest, which scripts/setup.sh enforces). The stock image is never modified.
 # Rerun whenever the workloads or tiered_memory/ change; the copy is rebuilt from scratch.
 set -euo pipefail
 
@@ -15,6 +18,8 @@ RES_JSON="$REPO_ROOT/third_party/resources.json"
 OUT="${DISK_OUT:-$REPO_ROOT/third_party/disks/x86-ubuntu-24.04-tm.img}"
 BIN_DIR="$REPO_ROOT/workloads/build/m5-fs"
 GUEST_DIR=/opt/tiered-memory
+DEB_DIR="$REPO_ROOT/third_party/debs"
+GUEST_PACKAGES=(libnuma1 numactl)
 
 log() { printf '\n==> %s\n' "$*"; }
 die() {
@@ -33,6 +38,20 @@ for n in $names; do
     [ -x "$BIN_DIR/$n" ] || die "$BIN_DIR/$n missing; run make -C workloads m5-fs"
     [ "$BIN_DIR/$n" -nt "$REPO_ROOT/workloads/$n.cpp" ] && [ "$BIN_DIR/$n" -nt "$REPO_ROOT/workloads/common.h" ] ||
         die "$BIN_DIR/$n is older than its source; run make -C workloads m5-fs"
+done
+
+log "Fetching guest packages: ${GUEST_PACKAGES[*]}"
+mkdir -p "$DEB_DIR"
+for pkg in "${GUEST_PACKAGES[@]}"; do
+    if ! compgen -G "$DEB_DIR/${pkg}_*.deb" >/dev/null; then
+        (cd "$DEB_DIR" && apt-get download "$pkg") || die "apt-get download $pkg failed (needs network and an apt index: sudo apt-get update)"
+    fi
+done
+DEBS=()
+for pkg in "${GUEST_PACKAGES[@]}"; do
+    deb="$(ls "$DEB_DIR/${pkg}"_*.deb | sort -V | tail -n 1)"
+    DEBS+=("$deb")
+    echo "  $(basename "$deb")"
 done
 
 log "Copying $BASE -> $OUT"
@@ -82,6 +101,12 @@ for n in $names; do sudo install -m 755 "$BIN_DIR/$n" "$MNT$GUEST_DIR/bin/$n"; d
 sudo cp "$REPO_ROOT"/tiered_memory/*.py "$MNT$GUEST_DIR/tiered_memory/"
 sudo chmod -R a+rX "$MNT$GUEST_DIR"
 sudo sh -c "cd '$REPO_ROOT' && git rev-parse HEAD 2>/dev/null > '$MNT$GUEST_DIR/REPO_COMMIT'" || true
+
+log "Installing ${GUEST_PACKAGES[*]} into the image"
+# dpkg --root runs the packages' maintainer scripts chrooted into the image, so they are
+# registered with the image's own dpkg database (numactl only needs ldconfig for libnuma1).
+sudo dpkg --root="$MNT" --install "${DEBS[@]}" >/dev/null
+[ -x "$MNT/usr/bin/numactl" ] || die "numactl did not install into the image"
 
 # The run script runs as the image's unprivileged gem5 user. Config D turns /dev/sdb into swap
 # first, so allow exactly these commands without a password (tiered_memory/guest_script.py).

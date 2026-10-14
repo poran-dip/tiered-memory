@@ -30,7 +30,20 @@ def test_workload_args_are_shell_quoted():
     assert "-s 'a b'" in s
 
 
+def test_numactl_options_reach_guest_run_as_one_argument():
+    s = run_script("chase", ["-s", "64"], numactl="--membind=1")
+    assert "guest_run --numactl=--membind=1 chase -s 64" in s
+    s = run_script("chase", [], numactl="--cpunodebind=0 --membind=1")
+    assert "'--numactl=--cpunodebind=0 --membind=1' chase" in s
+
+
+def test_no_numactl_by_default():
+    assert "--numactl" not in run_script("chase", [])
+
+
 @pytest.mark.parametrize("swap", [None, "/dev/sdb"])
-def test_script_is_valid_bash(swap):
-    out = subprocess.run(["bash", "-n"], input=run_script("chase", [], swap), text=True)
+@pytest.mark.parametrize("numactl", [None, "--membind=1"])
+def test_script_is_valid_bash(swap, numactl):
+    script = run_script("chase", [], swap, numactl=numactl)
+    out = subprocess.run(["bash", "-n"], input=script, text=True)
     assert out.returncode == 0
