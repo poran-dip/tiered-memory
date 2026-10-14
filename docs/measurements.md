@@ -24,13 +24,12 @@ machine, writes `results/native_sweep.csv`).
 ## Conventions
 
 - **Slow tier detection.** A gem5 memory controller whose stat path matches `--slow-pattern`
-  (default `slow|cxl|pcie`) is counted as the slow tier. Name the second tier's controller
-  accordingly when the two-tier config is written. Everything else is the fast tier.
+  (default `slow|cxl|pcie`) is counted as the slow tier. Config B's slow DRAM is the `slow` child of its memory system (`board.memory.slow`), so it matches. Everything else is the fast tier.
 - **Raw stats kept.** Every gem5 run also writes `roi_stats.json` (all ROI stats) next to
   `stats.txt`, so a new metric can be added later with `--reparse` and no re-simulation.
 - **System-wide counters.** The Linux counters cover the whole machine, so run native sweeps on
   an otherwise idle system.
-- **Full-system runs.** `configs/a_baseline.py`, `c_ideal.py`, `d_swap.py` (and later B) write `fs_result.json` next to
+- **Full-system runs.** `configs/a_baseline.py`, `b_proposed.py`, `c_ideal.py`, `d_swap.py` write `fs_result.json` next to
   `stats.txt` (rebuild it without gem5: `python3 -m tiered_memory.fsreport <run dir>`): the same gem5 columns as the SE sweep, plus the Linux columns measured inside the
   guest by `tiered_memory/guest_run.py` and a `guest` entry (kernel, memory and swap size, NUMA nodes and their sizes).
   The guest-side Linux and CPU columns cover the whole workload process, as natively; the gem5
@@ -38,7 +37,7 @@ machine, writes `results/native_sweep.csv`).
   Runs with their `-d` directory under `results/fs/` are committed, and each adds a row to
   `results/gem5_fs.csv`: `run` (the directory name), `config`, `workload_args`, the config's
   settings (`fast_size`, `swap_size`, `swap_delay`, `roi_cpu`, ...), the report columns, the
-  `guest_*` columns (kernel, memory, swap, each node's CPUs and memory), `gem5_commit`,
+  `guest_*` columns (kernel, memory, swap, each node's CPUs and memory, and the kernel's NUMA balancing, demotion and memory-tier settings), `numactl` (`none` unless the workload was bound for a validation run), `gem5_commit`,
   `repo_commit`, `wall_sec` (host wall time of the whole run) and the `host_*` columns.
 - **Host metadata.** Native sweep rows carry `host_cpu`, `host_kernel`, `host_wsl` and
   `host_mem_mib` (rows written before this was added have them blank).
@@ -48,7 +47,6 @@ machine, writes `results/native_sweep.csv`).
 - Native IPC (`perf stat`).
 - ROI-only Linux counters. Today they span allocation plus ROI, which is where spill, swap and
   migration mostly happen anyway.
-- The slow tier (config B, needs the SRAT table in the gem5 fork) and the PCIe link model. Those
-  columns exist but stay blank or 0 until the corresponding piece is built.
+- The PCIe link model. Config B's node 1 differs from node 0 only in DRAM timing (DDR3-1600 vs DDR4-2400), so the `pcie_*` columns are payload bytes at the slow controller, with no link latency, bandwidth cap or protocol overhead.
 - Swap in gem5 (config D) runs on gem5's IDE disk model with a fixed per-request delay
   (`--swap-delay`), not an NVMe model: latency is configurable, queueing and bandwidth are not.

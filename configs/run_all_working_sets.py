@@ -11,6 +11,9 @@ stopped. Run from anywhere with the host Python (not gem5):
   python3 configs/run_all_working_sets.py --tiers fits  # only the sanity sizes
   python3 configs/run_all_working_sets.py --workloads stream chase -j 3
 
+Config B (b_proposed.py) runs only with --configs, e.g. --configs a b c d, until its two memory
+nodes have been checked.
+
 Order: the whole fits tier first, cheapest first, so a broken setup shows up within minutes. Then
 everything else longest-first, which keeps the batch's total time close to the longest single run
 divided across the -j slots.
@@ -45,7 +48,7 @@ from tiered_memory.fsreport import (  # noqa: E402
 from tiered_memory.workloads import FS_TIERS, NAMES, TIERS  # noqa: E402
 
 GEM5 = REPO / "third_party/gem5/build/X86/gem5.opt"
-CONFIG_FILES = {"a": "a_baseline.py", "c": "c_ideal.py", "d": "d_swap.py"}
+CONFIG_FILES = {"a": "a_baseline.py", "b": "b_proposed.py", "c": "c_ideal.py", "d": "d_swap.py"}
 
 # Time estimate (for -n and the run order only; ±50%). The timing CPU simulates about 1M guest
 # instructions per wall second (finding 002, F9), and each run spends ~1.5 min booting on KVM and

@@ -47,6 +47,7 @@ d-stream-448-back     d       stream    -s 448 -i 1 -d 1
 config_file() {
     case "$1" in
         a) echo configs/a_baseline.py ;;
+        b) echo configs/b_proposed.py ;;
         c) echo configs/c_ideal.py ;;
         d) echo configs/d_swap.py ;;
         *) echo "unknown config '$1'" >&2; exit 1 ;;

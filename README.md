@@ -39,7 +39,7 @@ CXL is the inspiration, not the target. There is no custom page-placement algori
 | 4     | PCIe modeling: bandwidth, latency, transaction overhead  |        |
 | 5     | Analysis: whether and when B beats A                     |        |
 
-The gem5 sweep (`configs/sweep.py`) runs in syscall-emulation (SE) mode with a single DRAM channel. SE mode has no OS, so NUMA placement, paging, swap and migration need full-system mode. Phase 1 adds it: `configs/a_baseline.py` boots the stock Ubuntu 24.04 kernel on X86 with config A's fast DRAM. Config B needs gem5 to describe the second NUMA node to Linux (an ACPI SRAT table), which comes next in the gem5 fork.
+The gem5 sweep (`configs/sweep.py`) runs in syscall-emulation (SE) mode with a single DRAM channel. SE mode has no OS, so NUMA placement, paging, swap and migration need full-system mode. Phase 1 adds it: `configs/a_baseline.py` boots the stock Ubuntu 24.04 kernel on X86 with config A's fast DRAM, and `configs/b_proposed.py` adds config B's slow DRAM as a second, CPU-less NUMA node, described to Linux by an ACPI SRAT table from the gem5 fork.
 
 ## Repo layout
 
@@ -49,6 +49,7 @@ configs/run.py      gem5 SE config: one workload, configurable DRAM
 configs/sweep.py    gem5 SE sweep over DRAM size -> results/gem5_sweep.csv
 configs/fsboard.py  shared gem5 full-system setup (X86, Ubuntu 24.04, KVM boot, ROI CPU switch)
 configs/a_baseline.py  config A: 512 MiB fast DRAM, full-system
+configs/b_proposed.py  config B: config A + 2 GiB slow DRAM on CPU-less NUMA node 1
 configs/c_ideal.py  config C: 2.5 GiB fast DRAM (B's total capacity)
 configs/d_swap.py   config D: config A + 2 GiB swap on a second simulated disk
 scripts/fs_runs.sh  runs the committed full-system set into results/fs/ (parallel with -j)
@@ -57,7 +58,7 @@ native/bench.py     real machine: working-set size sweep
 tiered_memory/      measurement code shared by both sweeps
 tests/              pytest suite for tiered_memory/ and the sweeps
 scripts/setup.sh    fetches gem5 at a pinned commit, builds everything, prepares the FS disk
-scripts/make_disk.sh  copies the Ubuntu disk image and adds the workloads (needs sudo)
+scripts/make_disk.sh  copies the Ubuntu disk image, adds the workloads and numactl (needs sudo)
 docs/               measurements.md, literature-review.md
 results/            committed result CSVs (native_sweep.csv, gem5_sweep.csv, ...)
 findings/           what the results show, one numbered file per finding
@@ -180,6 +181,18 @@ third_party/gem5/build/X86/gem5.opt -d m5out/d-chase-640 configs/d_swap.py \
 - `--swap-size` (default 2GiB, B's slow-tier size, so B and D add the same capacity).
 - `--swap-delay` (default 80us): fixed latency per swap-disk request, standing in for an NVMe SSD's 4 KiB random read. gem5's IDE disk is not an NVMe model, so treat D as context for A vs B rather than a calibrated SSD.
 - D needs the disk image rebuilt (`scripts/setup.sh disk`) after this change: it adds a sudoers rule so the guest's unprivileged user can run `mkswap`/`swapon`. If swap setup fails, the run stops before the workload with `SWAP SETUP FAILED` in `guest_output.txt`, rather than silently running as config A. The `guest` entry in `fs_result.json` reports `swap_total_kib`.
+
+Config B (`configs/b_proposed.py`) is config A plus 2 GiB of DDR3-1600 above the fast DRAM, on NUMA node 1 with no CPUs, the way a PCIe or CXL memory expander appears. Placement is left to the stock kernel: allocations fill node 0 first and fall back to node 1, and NUMA balancing does whatever it does by default. Node 1 is slower only by its DRAM timing for now; the PCIe link comes in Phase 4.
+
+```bash
+third_party/gem5/build/X86/gem5.opt -d m5out/b-chase-64 configs/b_proposed.py \
+    --workload chase --kvm-no-perf -- -s 64 -i 1
+```
+
+- `--fast-size` / `--slow-size` (default 512MiB / 2GiB). Both are placed below the X86 I/O hole at 3 GiB.
+- The slow controller sits under `board.memory.slow`, so its traffic is counted as remote (`slow_*` columns, `remote_access_frac`).
+- `--numactl=OPTS` (any config) runs the workload under `numactl` with those options, e.g. `--numactl=--membind=1` to put all of it on node 1. It is for checking the nodes (Phase 1 and 2), not for experiment runs, where placement is Linux's job. The setting is recorded as the `numactl` column. Needs the disk image rebuilt (`scripts/setup.sh disk`), which installs `numactl`.
+- `fs_result.json` and the CSV record the kernel's own placement mechanisms for every run: `guest_numa_balancing`, `guest_demotion_enabled` and `guest_memory_tiers` (tier id and its nodes). On the stock 6.8 kernel, expect node 1 in the same tier as node 0, so no demotion.
 
 Native RAM-limit sweep (needs sudo for the cgroup; run on an otherwise idle machine, since the Linux counters are system-wide):
 
