@@ -137,13 +137,13 @@ def parse_args(p):
     args = p.parse_args()
     err = claim_outdir(m5.options.outdir, args.overwrite)
     if err:
-        sys.exit(err)
+        _die(err)
     return args
 
 
 def _resources():
     if not RESOURCES_JSON.exists():
-        sys.exit(f"{RESOURCES_JSON} missing: run scripts/setup.sh resources disk")
+        _die(f"{RESOURCES_JSON} missing: run scripts/setup.sh resources disk")
     return json.loads(RESOURCES_JSON.read_text())
 
 
@@ -181,7 +181,7 @@ def build_board(args, memory, swap_device=None):
     res = _resources()
     disk = Path(args.disk)
     if not disk.exists():
-        sys.exit(f"{disk} missing: run scripts/setup.sh disk")
+        _die(f"{disk} missing: run scripts/setup.sh disk")
     # gem5_init.sh in the image skips systemd with no_systemd: less boot work and fewer
     # background services competing with the workload for the 512 MiB fast tier.
     kernel_args = board.get_default_kernel_args() + ["no_systemd"]
@@ -301,6 +301,11 @@ def _install_handlers():
 
 def _write_run_info(outdir, info):
     (outdir / RUN_INFO).write_text(json.dumps(info, indent=1, sort_keys=True) + "\n")
+
+
+def _die(msg):
+    print(f"error: {msg}", file=sys.stderr, flush=True)
+    sys.exit(1)
 
 
 def run(board, args, config, settings=None, progress_extra=None):
