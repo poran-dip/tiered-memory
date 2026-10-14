@@ -1,0 +1,6 @@
+sudo: unable to resolve host (none): Name or service not known
+sudo: unable to resolve host (none): Name or service not known
+SWAP_ON /dev/sdb
+GUESTINFO {"kernel": "6.8.0-52-generic", "mem_total_kib": 469524, "nodes": {"0": {"cpus": "0", "mem_kib": 469524}}, "swap_total_kib": 2097148}
+RESULT name=stream ws_mb=448 iters=1 roi_sec=3.712436 work=469761984 checksum=403838933
+LINUXSTATS {"alloc_local_pages": 155499, "alloc_other_pages": 0, "cpu_util": 0.3465, "demote_pages": 0, "majflt": 5185, "migrate_fail": 8, "migrate_success": 1094, "minflt": 147794, "node0_alloc_hit": 155499, "node0_alloc_miss": 0, "numa_hint_faults": 0, "numa_pages_migrated": 0, "promote_candidates": 0, "promote_pages": 0, "returncode": 0, "swap_in_pages": 38597, "swap_out_pages": 46589, "sys_majfault": 5545, "sys_sec": 2.546, "user_sec": 0.234, "wall_sec_guest": 8.021781}

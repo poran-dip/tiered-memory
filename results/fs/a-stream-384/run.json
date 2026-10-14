@@ -1,0 +1,33 @@
+{
+ "argv": [
+  "configs/a_baseline.py",
+  "--workload",
+  "stream",
+  "--kvm-no-perf",
+  "--",
+  "-s",
+  "384",
+  "-i",
+  "1"
+ ],
+ "config": "A",
+ "exit_cause": "m5_hypercall instruction encountered",
+ "gem5_commit": "618cf87d11c91cb2b4ca763b7a647b8e3cefe9fe",
+ "host": {
+  "host_cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+  "host_kernel": "6.18.54.1-microsoft-standard-WSL2",
+  "host_mem_mib": 11961,
+  "host_wsl": true
+ },
+ "repo_commit": "e7e0753b504a040dff91e13faaaafc0c630bb9ba-dirty",
+ "settings": {
+  "clk": "3GHz",
+  "fast_size": "512MiB",
+  "l2": "256KiB",
+  "roi_cpu": "timing"
+ },
+ "started": "2026-10-14T17:52:15+00:00",
+ "wall_sec": 215.0,
+ "workload": "stream",
+ "workload_args": "-s 384 -i 1"
+}
