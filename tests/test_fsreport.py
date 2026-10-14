@@ -104,6 +104,26 @@ def test_report_rebuilds_from_roi_stats_json_without_stats_txt(tmp_path):
     assert (tmp_path / ROI_STATS).exists()
 
 
+def test_report_rebuilds_from_only_the_committed_files(tmp_path):
+    first = _finished_run(tmp_path)
+    for name in ("stats.txt", ROI_MARKER):  # a fresh clone has neither (results/fs/.gitignore)
+        (tmp_path / name).unlink()
+    again = collect(tmp_path)
+    assert again["roi_completed"] is True
+    assert again["insts"] == first["insts"] == 1000000
+    assert again["workload"] == "chase"
+
+
+def test_a_run_killed_before_the_roi_stays_unfinished_and_keeps_its_workload(tmp_path):
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "stats.txt").write_text(STATS)  # end-of-run dump, no roi_done, no RESULT
+    (tmp_path / RUN_INFO).write_text(json.dumps(RUN_JSON))
+    row = collect(tmp_path)
+    assert row["roi_completed"] is False
+    assert "insts" not in row
+    assert row["workload"] == RUN_JSON["workload"]
+
+
 def test_claim_refuses_earlier_outputs_unless_overwrite(tmp_path):
     _finished_run(tmp_path)
     err = claim_outdir(tmp_path)

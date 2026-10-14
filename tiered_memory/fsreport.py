@@ -55,8 +55,13 @@ def roi_completed(outdir):
     """True if the run reached ROI end: configs/fsboard.py writes ROI_MARKER right after the dump.
 
     Without it, block 1 of stats.txt is gem5's end-of-run dump of the whole run, not the ROI.
+    A committed run keeps neither the marker nor stats.txt, only roi_stats.json, which collect()
+    writes for a completed ROI alone; so with no stats.txt, roi_stats.json stands in for it.
     """
-    return (Path(outdir) / ROI_MARKER).exists()
+    outdir = Path(outdir)
+    if (outdir / ROI_MARKER).exists():
+        return True
+    return not (outdir / "stats.txt").exists() and (outdir / ROI_STATS).exists()
 
 
 def guest_text(outdir):
@@ -124,7 +129,8 @@ def collect(outdir, workload=None):
     outdir = Path(outdir)
     text = guest_text(outdir)
     res = parse_result(text)
-    workload = workload or res.get("name", "")
+    # A run killed before its RESULT line still names its workload in run.json.
+    workload = workload or res.get("name", "") or read_run_info(outdir).get("workload", "")
     row = {"workload": workload}
     if res.get("checksum"):
         row["checksum"] = res["checksum"]

@@ -103,3 +103,30 @@ def test_no_memory_stats_still_gives_cpu_columns():
     row = summarize(COMMON)
     assert row["ipc"] == 0.5
     assert "mem_bw_gbs" not in row
+
+
+def test_cpu_busy_frac_from_the_timing_cpus_thread_idle_cycles():
+    st = {
+        **ONE_TIER,
+        "board.processor.switch.core.exec_context.thread_0.numIdleCycles": 1000000,
+    }
+    row = summarize(st)
+    assert row["cpu_busy_frac"] == round(1 - 1000000 / row["cycles"], 4)
+
+
+def test_disk_dma_counts_ide_lines_through_the_io_cache():
+    st = {
+        **ONE_TIER,
+        "board.cache_hierarchy.iocache.WriteLineReq.accesses::pc.south_bridge.ide": 128,
+        "board.cache_hierarchy.iocache.ReadReq.accesses::pc.south_bridge.ide": 64,
+        "board.cache_hierarchy.iocache.ReadReq.accesses::total": 64,  # not double counted
+    }
+    row = summarize(st)
+    assert row["disk_in_bytes"] == 128 * 64
+    assert row["disk_out_bytes"] == 64 * 64
+
+
+def test_disk_dma_is_zero_when_idle_and_blank_without_an_io_cache():
+    idle = {**ONE_TIER, "board.cache_hierarchy.iocache.tags.occupancies::total": 0.0}
+    assert summarize(idle)["disk_in_bytes"] == 0
+    assert summarize(ONE_TIER)["disk_in_bytes"] == ""
