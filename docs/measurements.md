@@ -35,6 +35,13 @@ machine, writes `results/native_sweep.csv`).
   guest by `tiered_memory/guest_run.py` and a `guest` entry (kernel, memory and swap size, NUMA nodes and their sizes).
   The guest-side Linux and CPU columns cover the whole workload process, as natively; the gem5
   columns cover only the ROI, which runs on the timing or O3 CPU while everything else runs on KVM.
+  Runs with their `-d` directory under `results/fs/` are committed, and each adds a row to
+  `results/gem5_fs.csv`: `run` (the directory name), `config`, `workload_args`, the config's
+  settings (`fast_size`, `swap_size`, `swap_delay`, `roi_cpu`, ...), the report columns, the
+  `guest_*` columns (kernel, memory, swap, each node's CPUs and memory), `gem5_commit`,
+  `repo_commit`, `wall_sec` (host wall time of the whole run) and the `host_*` columns.
+- **Host metadata.** Native sweep rows carry `host_cpu`, `host_kernel`, `host_wsl` and
+  `host_mem_mib` (rows written before this was added have them blank).
 
 ## Not covered yet
 

@@ -1,8 +1,24 @@
 """Full-system report built from a run directory, without gem5."""
 
+import csv
 import json
+import os
 
-from tiered_memory.fsreport import CONSOLE_FILE, GUEST_OUTPUT, ROI_MARKER, collect
+from tiered_memory import fsreport
+from tiered_memory.fsreport import (
+    CONSOLE_FILE,
+    FS_RESULT,
+    GUEST_OUTPUT,
+    PID_FILE,
+    ROI_MARKER,
+    ROI_STATS,
+    RUN_INFO,
+    add_to_csv,
+    claim_outdir,
+    collect,
+    csv_row,
+    write_csv,
+)
 
 STATS = """
 ---------- Begin Simulation Statistics ----------
@@ -49,3 +65,96 @@ def test_without_roi_marker_stats_are_not_read_as_roi(tmp_path):
 def test_console_is_the_fallback_and_workload_name_comes_from_result(tmp_path):
     (tmp_path / CONSOLE_FILE).write_text(GUEST)
     assert collect(tmp_path)["workload"] == "chase"
+
+
+# --- committed runs: results/fs/<run>/ and results/gem5_fs.csv ---------------------------------
+
+RUN_JSON = {
+    "config": "D",
+    "workload": "chase",
+    "workload_args": "-s 64 -i 1",
+    "settings": {"fast_size": "512MiB", "swap_delay": "80us"},
+    "gem5_commit": "618cf87",
+    "repo_commit": "abc123",
+    "host": {"host_cpu": "Test CPU", "host_wsl": True},
+    "started": "2026-10-14T00:00:00+00:00",
+    "wall_sec": 12.5,
+}
+
+GUEST_TWO_NODES = GUEST.replace(
+    '"nodes": {}',
+    '"nodes": {"0": {"cpus": "0", "mem_kib": 500}, "1": {"cpus": "", "mem_kib": 2000}}',
+)
+
+
+def _finished_run(d, guest=GUEST):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "stats.txt").write_text(STATS)
+    (d / ROI_MARKER).touch()
+    (d / GUEST_OUTPUT).write_text(guest)
+    (d / RUN_INFO).write_text(json.dumps(RUN_JSON))
+    return collect(d, "chase")
+
+
+def test_report_rebuilds_from_roi_stats_json_without_stats_txt(tmp_path):
+    first = _finished_run(tmp_path)
+    (tmp_path / "stats.txt").unlink()  # not committed
+    again = collect(tmp_path, "chase")
+    assert again["insts"] == first["insts"] == 1000000
+    assert (tmp_path / ROI_STATS).exists()
+
+
+def test_claim_refuses_earlier_outputs_unless_overwrite(tmp_path):
+    _finished_run(tmp_path)
+    err = claim_outdir(tmp_path)
+    assert err and "--overwrite" in err
+    assert claim_outdir(tmp_path, overwrite=True) is None
+    for name in (ROI_MARKER, FS_RESULT, ROI_STATS, GUEST_OUTPUT, RUN_INFO, "stats.txt"):
+        assert not (tmp_path / name).exists()  # a stale roi_done would fake a finished ROI
+    assert (tmp_path / PID_FILE).read_text().strip() == str(os.getpid())
+
+
+def test_claim_refuses_a_directory_a_live_gem5_is_using(tmp_path, monkeypatch):
+    (tmp_path / PID_FILE).write_text("4242\n")
+    monkeypatch.setattr(fsreport, "_gem5_alive", lambda pid: pid == 4242)
+    assert "in use" in claim_outdir(tmp_path, overwrite=True)
+    monkeypatch.setattr(fsreport, "_gem5_alive", lambda pid: False)  # stale pid file
+    assert claim_outdir(tmp_path) is None
+
+
+def test_csv_row_flattens_run_info_guest_nodes_and_host(tmp_path):
+    d = tmp_path / "d-chase-64"
+    row = csv_row(d, _finished_run(d, GUEST_TWO_NODES))
+    assert row["run"] == "d-chase-64"
+    assert row["config"] == "D"
+    assert row["workload_args"] == "-s 64 -i 1"
+    assert row["swap_delay"] == "80us"
+    assert row["guest_node1_mem_kib"] == 2000
+    assert row["guest_node1_cpus"] == ""
+    assert row["host_cpu"] == "Test CPU"
+    assert row["gem5_commit"] == "618cf87"
+    assert "guest" not in row
+
+
+def test_add_to_csv_replaces_the_same_run_and_keeps_others(tmp_path):
+    out = tmp_path / "gem5_fs.csv"
+    add_to_csv({"run": "a-chase-64", "ns_per_work": 1}, out)
+    add_to_csv({"run": "c-chase-64", "ns_per_work": 2}, out)
+    add_to_csv({"run": "a-chase-64", "ns_per_work": 3}, out)
+    with open(out) as fh:
+        rows = {r["run"]: r["ns_per_work"] for r in csv.DictReader(fh)}
+    assert rows == {"a-chase-64": "3", "c-chase-64": "2"}
+
+
+def test_write_csv_rebuilds_from_run_directories(tmp_path):
+    for name in ("c-chase-64", "a-chase-64"):
+        _finished_run(tmp_path / name)
+    out = tmp_path / "gem5_fs.csv"
+    write_csv([tmp_path / "c-chase-64", tmp_path / "a-chase-64"], out)
+    with open(out) as fh:
+        assert [r["run"] for r in csv.DictReader(fh)] == ["a-chase-64", "c-chase-64"]
+
+
+def test_only_runs_under_results_fs_are_committed(tmp_path):
+    assert fsreport.is_committed_run(fsreport.FS_DIR / "a-chase-64")
+    assert not fsreport.is_committed_run(tmp_path / "m5out" / "a-chase-64")

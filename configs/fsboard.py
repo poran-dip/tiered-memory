@@ -11,7 +11,12 @@ What a run does:
      SE mode), switch back to the boot CPU for the teardown.
   5. The script copies its output to the host (gem5-bridge writefile -> <outdir>/guest_output.txt);
      then the image issues hypercall 3 and the simulation exits.
-  6. tiered_memory.fsreport builds the report from the outdir (rerunnable without gem5).
+  6. tiered_memory.fsreport builds the report from the outdir (rerunnable without gem5). If the
+     outdir is under results/fs/, the run is also added to results/gem5_fs.csv.
+
+Every run writes run.json (config, arguments, gem5 and repo commits, host) to the outdir, and
+refuses an outdir that another gem5 is still using or that holds an earlier run's outputs (pass
+--overwrite to replace those).
 
 Kernel and base disk come from gem5-resources (scripts/setup.sh resources writes their local paths to
 third_party/resources.json); the disk actually booted is the copy with our binaries added
@@ -21,6 +26,7 @@ third_party/resources.json); the disk actually booted is the copy with our binar
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import m5
@@ -47,8 +53,20 @@ from m5.objects import IdeDisk, RawDiskImage
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from tiered_memory.fsreport import CONSOLE_FILE, ROI_MARKER, collect  # noqa: E402
+from tiered_memory.fsreport import (  # noqa: E402
+    CONSOLE_FILE,
+    FS_CSV,
+    ROI_MARKER,
+    RUN_INFO,
+    add_to_csv,
+    claim_outdir,
+    collect,
+    csv_row,
+    is_committed_run,
+    release_outdir,
+)
 from tiered_memory.guest_script import run_script  # noqa: E402
+from tiered_memory.hostinfo import GEM5_DIR, git_commit, host_columns  # noqa: E402
 from tiered_memory.progress import Progress  # noqa: E402
 from tiered_memory.workloads import NAMES  # noqa: E402
 
@@ -87,6 +105,11 @@ def add_common_args(p):
     p.add_argument("--l2", default="256KiB", help="kept small, as in configs/run.py")
     p.add_argument("--disk", default=str(DEFAULT_DISK), help="disk image with our binaries")
     p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace an earlier run's outputs in the -d directory instead of refusing to start",
+    )
+    p.add_argument(
         "--interactive",
         action="store_true",
         help="boot to a shell instead of running the workload (attach with m5term)",
@@ -107,6 +130,15 @@ def add_common_args(p):
         "(0 = off). Progress exits do not touch the stats",
     )
     p.add_argument("wl_args", nargs="*", help="workload arguments, after '--'")
+
+
+def parse_args(p):
+    """Parse a config's arguments and claim the -d directory for this run (see claim_outdir)."""
+    args = p.parse_args()
+    err = claim_outdir(m5.options.outdir, args.overwrite)
+    if err:
+        sys.exit(err)
+    return args
 
 
 def _resources():
@@ -267,12 +299,32 @@ def _install_handlers():
             return self._stop
 
 
-def run(board, args, progress_extra=None):
+def _write_run_info(outdir, info):
+    (outdir / RUN_INFO).write_text(json.dumps(info, indent=1, sort_keys=True) + "\n")
+
+
+def run(board, args, config, settings=None, progress_extra=None):
     """Simulate to the end of the guest script, then print a one-line report from the outputs.
 
+    config: the config's letter ("A", "C", "D", ...), recorded in run.json and the results CSV.
+    settings: the config's own options worth a CSV column each (e.g. {"fast_size": "512MiB"}).
     progress_extra: optional callable returning extra text for each ROI progress line.
     """
     global _progress, _board, _progress_extra
+    outdir = Path(m5.options.outdir)
+    info = {
+        "config": config,
+        "workload": args.workload,
+        "workload_args": " ".join(args.wl_args),
+        "settings": {"roi_cpu": args.roi_cpu, "clk": args.clk, "l2": args.l2, **(settings or {})},
+        "argv": sys.argv,
+        "gem5_commit": git_commit(GEM5_DIR),
+        "repo_commit": git_commit(REPO),
+        "host": host_columns(),
+        "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _write_run_info(outdir, info)
+    wall0 = time.monotonic()
     _board, _progress_extra = board, progress_extra
     if args.progress_sec > 0:
         _progress = Progress(wall_gap=args.progress_sec, max_sim_sec=args.max_sim_sec)
@@ -280,11 +332,12 @@ def run(board, args, progress_extra=None):
     sim = Simulator(board=board)
     # Window per stretch between exit events, not a total budget: gem5 restarts it at each exit.
     sim.set_max_ticks(int(args.max_sim_sec * TICKS_PER_SEC))
-    outdir = Path(m5.options.outdir)
     print(f"Booting; guest console: {outdir / CONSOLE_FILE}")
     sim.run()
     cause = sim.get_last_exit_event_cause()
     print(f"EXIT cause={cause} tick={sim.get_current_tick()} ({_sim_sec():.2f}s sim)")
+    info.update(wall_sec=round(time.monotonic() - wall0, 1), exit_cause=str(cause))
+    _write_run_info(outdir, info)
     if "max tick" in str(cause).lower() or "simulate() limit" in str(cause).lower():
         print(
             f"Gave up after {args.max_sim_sec:g}s of simulated time with no progress. "
@@ -294,3 +347,7 @@ def run(board, args, progress_extra=None):
     if "checksum" not in row:
         print(f"WARNING: no RESULT line from the guest; check {outdir / CONSOLE_FILE}")
     print("FS_RESULT " + json.dumps(row, sort_keys=True))
+    if is_committed_run(outdir):
+        add_to_csv(csv_row(outdir, row), FS_CSV)
+        print(f"Added to {FS_CSV}")
+    release_outdir(outdir)

@@ -7,3 +7,6 @@ third_party/
 .ruff_cache/
 .venv/
 .pytest_cache/
+
+# lock files for results CSVs written by parallel runs
+results/.*.lock
