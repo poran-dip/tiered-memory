@@ -145,6 +145,14 @@ scripts/fs_runs.sh 'stream-448'  # only runs whose name matches
 python3 -m tiered_memory.fsreport --csv results/gem5_fs.csv results/fs/*/   # rebuild the CSV
 ```
 
+`configs/run_all_working_sets.py` runs every workload at each of its working-set tiers under configs A, C and D, into `results/fs/<config>-<workload>-<tier>-<MiB>`. The tiers (sizes in `tiered_memory/workloads.py`, `FS_TIERS`) are **fits** (a sanity size, at most 64 MiB), **near** (just fits in config A, 336–384 MiB) and **over** (past config A's capacity, 448 MiB). The fits tier runs first, then everything else longest-first, with a per-run wall-time cap:
+
+```bash
+python3 configs/run_all_working_sets.py -n -j 3      # list the runs and the time estimate
+python3 configs/run_all_working_sets.py -j 3         # run them (finished runs are skipped)
+python3 configs/run_all_working_sets.py --tiers fits # only the sanity sizes
+```
+
 The terminal prints the milestones (kernel booted, run script started, ROI begin/end) and a final `FS_RESULT {...}` line. With KVM the boot takes a few seconds of simulated time. Outputs in the `-d` directory:
 
 - `fs_result.json`: the report (gem5 ROI columns, guest Linux columns, `guest` kernel and NUMA nodes). Rebuild it without gem5: `python3 -m tiered_memory.fsreport results/fs/a-chase-64` (works from `roi_stats.json` when `stats.txt` is absent, as in a fresh clone).
