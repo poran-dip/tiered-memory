@@ -35,7 +35,7 @@ Slowdown = ROI time / baseline ROI time. `OOM` = killed by the kernel (exit −9
 | `sort`     |  1.03 | 1.02 |  0.99 | 1.63 |              OOM |      |        |       |
 | `gemm`     |  1.01 | 0.98 |  1.00 | 0.96 |             1.27 | 1.31 |   1.76 |   OOM |
 | `chase`    |  1.05 | 1.01 |  1.00 |  OOM |                  |      |        |       |
-| `kvdecode` |  0.98 | 1.07 |  0.99 | 0.92 | timeout (> 49×)² |      |        |       |
+| `kvdecode` |  0.98 | 1.07 |  0.99 | 0.92 | timeout (> 48×)² |      |        |       |
 | `graph`    |  1.00 | 1.01 |  1.04 | 1.05 |              OOM |      |        |       |
 | `kvstore`  |  1.03 | 1.03 |  0.98 |  OOM |                  |      |        |       |
 | `hashjoin` |  0.99 | 0.95 |  1.06 | 1.60 |             4.80 |      |        |       |
@@ -57,7 +57,7 @@ Swap traffic at the first limit that hurt:
 
 ## Findings
 
-**F1 · Established: with enough memory, a tighter limit costs nothing.** At limits from 1.25× to 2× the working set, every workload except `stream` stays within 0.92–1.07× of baseline, with no major faults and no swap. That band is run-to-run noise at these ROI lengths (0.15–1.3 s). Differences under about ±8% in this data set are not meaningful.
+**F1 · Established: with enough memory, a tighter limit costs nothing.** At limits from 1.25× to 2× the working set, every workload except `stream` stays within 0.95–1.07× of baseline, with no major faults and no swap. That band is run-to-run noise at these ROI lengths (0.15–1.3 s). Differences under about ±8% in this data set are not meaningful.
 
 **F2 · Established: once a workload no longer fits, it does one of two things.**
 
