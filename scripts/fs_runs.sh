@@ -16,6 +16,12 @@
 #
 # --kvm-no-perf is added automatically when the host has no hardware perf counters (WSL2, most
 # VMs). Extra gem5 config options for every run: FS_FLAGS="--roi-cpu o3" scripts/fs_runs.sh
+#
+# A row's arguments are the workload's, unless they contain a bare --: then what comes before it
+# are config options for that run alone (e.g. config B's --link or --numactl) and what comes after
+# are the workload's. Lines starting with # are comments.
+#
+#   scripts/fs_runs.sh '^b-'           # config B: the A/C/D set plus the Phase 2 node checks
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,6 +48,21 @@ d-stream-448          d       stream    -s 448 -i 1
 a-stream-448-back     a       stream    -s 448 -i 1 -d 1
 c-stream-448-back     c       stream    -s 448 -i 1 -d 1
 d-stream-448-back     d       stream    -s 448 -i 1 -d 1
+# Config B, default link (Gen4 x8, plain-PCIe latencies; see docs/pcie-link.md)
+b-chase-64            b       chase     -s 64 -i 1
+b-chase-256           b       chase     -s 256 -i 1
+b-stream-320          b       stream    -s 320 -i 1
+b-stream-384          b       stream    -s 384 -i 1
+b-stream-448          b       stream    -s 448 -i 1
+b-stream-448-back     b       stream    -s 448 -i 1 -d 1
+# Phase 2: the workload bound to one node. node0 vs node1 is the link + slow DRAM cost; nolink
+# (DDR3 straight on the bus) splits it into DRAM timing and link
+b-chase-64-node0          b   chase     --numactl=--membind=0 -- -s 64 -i 1
+b-chase-64-node1          b   chase     --numactl=--membind=1 -- -s 64 -i 1
+b-chase-64-node1-nolink   b   chase     --link none --numactl=--membind=1 -- -s 64 -i 1
+b-stream-320-node0        b   stream    --numactl=--membind=0 -- -s 320 -i 1
+b-stream-320-node1        b   stream    --numactl=--membind=1 -- -s 320 -i 1
+b-stream-320-node1-nolink b   stream    --link none --numactl=--membind=1 -- -s 320 -i 1
 "
 
 config_file() {
@@ -75,15 +96,32 @@ if [ ! -e /sys/bus/event_source/devices/cpu ]; then
     flags="--kvm-no-perf $flags"
 fi
 
+# Split a row's arguments into config options (before a bare --) and workload arguments: sets the
+# arrays run_opts and wl_args.
+split_args() {
+    run_opts=()
+    wl_args=("$@")
+    local i
+    for ((i = 1; i <= $#; i++)); do
+        if [ "${!i}" = "--" ]; then
+            run_opts=("${@:1:i-1}")
+            wl_args=("${@:i+1}")
+            return
+        fi
+    done
+}
+
 run_one() {
     local name="$1" cfg="$2" wl="$3"
     shift 3
+    split_args "$@"
     local dir="$OUT/$name"
     mkdir -p "$dir"
     echo "[$(date +%H:%M:%S)] start  $name"
     # shellcheck disable=SC2086  # flags is a list of options
     if (cd "$REPO_ROOT" && "$GEM5" -d "$dir" "$(config_file "$cfg")" --workload "$wl" \
-        $flags $overwrite -- "$@") >"$dir/gem5.log" 2>&1; then
+        $flags ${run_opts[@]+"${run_opts[@]}"} $overwrite -- "${wl_args[@]}") \
+        >"$dir/gem5.log" 2>&1; then
         echo "[$(date +%H:%M:%S)] done   $name"
     else
         echo "[$(date +%H:%M:%S)] FAILED $name (see $dir/gem5.log)"
@@ -94,6 +132,7 @@ cd "$REPO_ROOT"
 selected=0
 while read -r name cfg wl args; do
     [ -n "$name" ] || continue
+    [[ "$name" == \#* ]] && continue
     [[ "$name" =~ $filter ]] || continue
     if [ -z "$overwrite" ] && [ -e "$OUT/$name/fs_result.json" ]; then
         echo "skip   $name (done; --overwrite to rerun)"
@@ -101,7 +140,10 @@ while read -r name cfg wl args; do
     fi
     selected=$((selected + 1))
     if [ "$dry" = 1 ]; then
-        echo "would run $name: $(config_file "$cfg") --workload $wl $flags $overwrite -- $args"
+        # shellcheck disable=SC2086  # args is the row's argument list
+        split_args $args
+        echo "would run $name: $(config_file "$cfg") --workload $wl $flags" \
+            "${run_opts[*]+${run_opts[*]}} $overwrite -- ${wl_args[*]}"
         continue
     fi
     while [ "$(jobs -rp | wc -l)" -ge "$jobs_max" ]; do

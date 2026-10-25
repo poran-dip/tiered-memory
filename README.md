@@ -30,16 +30,16 @@ CXL is the inspiration, not the target. There is no custom page-placement algori
 
 ## Status
 
-| Phase | What                                                     | Status |
-| ----- | -------------------------------------------------------- | ------ |
-| 0     | Workloads, measurement reporting, native RAM-limit sweep | Done   |
-| 1     | gem5 full-system: Linux sees fast node 0 and slow node 1 | Next   |
-| 2     | Validate that node 1 is measurably slower                |        |
-| 3     | Workload experiments: A vs B, then C and D               |        |
-| 4     | PCIe modeling: bandwidth, latency, transaction overhead  |        |
-| 5     | Analysis: whether and when B beats A                     |        |
+| Phase | What                                                     | Status                     |
+| ----- | -------------------------------------------------------- | -------------------------- |
+| 0     | Workloads, measurement reporting, native RAM-limit sweep | Done                       |
+| 1     | gem5 full-system: Linux sees fast node 0 and slow node 1 | Next                       |
+| 2     | Validate that node 1 is measurably slower                |                            |
+| 3     | Workload experiments: A vs B, then C and D               |                            |
+| 4     | PCIe modeling: bandwidth, latency, transaction overhead  | Link model in, to validate |
+| 5     | Analysis: whether and when B beats A                     |                            |
 
-The gem5 sweep (`configs/sweep.py`) runs in syscall-emulation (SE) mode with a single DRAM channel. SE mode has no OS, so NUMA placement, paging, swap and migration need full-system mode. Phase 1 adds it: `configs/a_baseline.py` boots the stock Ubuntu 24.04 kernel on X86 with config A's fast DRAM, and `configs/b_proposed.py` adds config B's slow DRAM as a second, CPU-less NUMA node, described to Linux by an ACPI SRAT table from the gem5 fork.
+The gem5 sweep (`configs/sweep.py`) runs in syscall-emulation (SE) mode with a single DRAM channel. SE mode has no OS, so NUMA placement, paging, swap and migration need full-system mode. Phase 1 adds it: `configs/a_baseline.py` boots the stock Ubuntu 24.04 kernel on X86 with config A's fast DRAM, and `configs/b_proposed.py` adds config B's slow DRAM as a second, CPU-less NUMA node, described to Linux by an ACPI SRAT table from the gem5 fork. The slow DRAM sits behind a PCIe link modeled in the same fork (`PCIeMemLink`: link rate, TLP overhead, latencies, tags and credits; see [`docs/pcie-link.md`](docs/pcie-link.md)).
 
 ## Repo layout
 
@@ -49,7 +49,8 @@ configs/run.py      gem5 SE config: one workload, configurable DRAM
 configs/sweep.py    gem5 SE sweep over DRAM size -> results/gem5_sweep.csv
 configs/fsboard.py  shared gem5 full-system setup (X86, Ubuntu 24.04, KVM boot, ROI CPU switch)
 configs/a_baseline.py  config A: 512 MiB fast DRAM, full-system
-configs/b_proposed.py  config B: config A + 2 GiB slow DRAM on CPU-less NUMA node 1
+configs/b_proposed.py  config B: config A + 2 GiB slow DRAM behind PCIe on CPU-less NUMA node 1
+configs/link_check.py  checks the PCIe link model alone against tiered_memory/pcie.py (no OS)
 configs/c_ideal.py  config C: 2.5 GiB fast DRAM (B's total capacity)
 configs/d_swap.py   config D: config A + 2 GiB swap on a second simulated disk
 scripts/fs_runs.sh  runs the committed full-system set into results/fs/ (parallel with -j)
@@ -59,7 +60,7 @@ tiered_memory/      measurement code shared by both sweeps
 tests/              pytest suite for tiered_memory/ and the sweeps
 scripts/setup.sh    fetches gem5 at a pinned commit, builds everything, prepares the FS disk
 scripts/make_disk.sh  copies the Ubuntu disk image, adds the workloads and numactl (needs sudo)
-docs/               measurements.md, literature-review.md
+docs/               measurements.md, pcie-link.md, literature-review.md
 results/            committed result CSVs (native_sweep.csv, gem5_sweep.csv, ...)
 findings/           what the results show, one numbered file per finding
 third_party/gem5    gem5 checkout (not committed, see Setup)
@@ -182,15 +183,20 @@ third_party/gem5/build/X86/gem5.opt -d m5out/d-chase-640 configs/d_swap.py \
 - `--swap-delay` (default 80us): fixed latency per swap-disk request, standing in for an NVMe SSD's 4 KiB random read. gem5's IDE disk is not an NVMe model, so treat D as context for A vs B rather than a calibrated SSD.
 - D needs the disk image rebuilt (`scripts/setup.sh disk`) after this change: it adds a sudoers rule so the guest's unprivileged user can run `mkswap`/`swapon`. If swap setup fails, the run stops before the workload with `SWAP SETUP FAILED` in `guest_output.txt`, rather than silently running as config A. The `guest` entry in `fs_result.json` reports `swap_total_kib`.
 
-Config B (`configs/b_proposed.py`) is config A plus 2 GiB of DDR3-1600 above the fast DRAM, on NUMA node 1 with no CPUs, the way a PCIe or CXL memory expander appears. Placement is left to the stock kernel: allocations fill node 0 first and fall back to node 1, and NUMA balancing does whatever it does by default. Node 1 is slower only by its DRAM timing for now; the PCIe link comes in Phase 4.
+Config B (`configs/b_proposed.py`) is config A plus 2 GiB of DDR3-1600 above the fast DRAM, on NUMA node 1 with no CPUs, the way a PCIe or CXL memory expander appears. The DDR3 sits behind a PCIe link (the gem5 fork's `PCIeMemLink`), so every access to node 1 crosses root port, link and device controller both ways ([`docs/pcie-link.md`](docs/pcie-link.md) has the model, its sources and what to expect). Placement is left to the stock kernel: allocations fill node 0 first and fall back to node 1, and NUMA balancing does whatever it does by default.
 
 ```bash
 third_party/gem5/build/X86/gem5.opt -d m5out/b-chase-64 configs/b_proposed.py \
     --workload chase --kvm-no-perf -- -s 64 -i 1
 ```
 
+- `--link` (default `gen4x8`): `genNxM`, generation 1-5 and 1-32 lanes, or `none` to put the DDR3 directly on the memory bus (node 1 then differs only in DRAM timing, as before the link existed).
+- `--link-latency` (default `pcie`, about 427 ns added to an idle read; `cxl` is about 157 ns), with per-part overrides `--rc-latency`, `--phy-latency` and `--dev-latency` in ns. `--link-tags` (256) and `--link-credits` (64) limit what is in flight.
+- `--slow-dram` (default `ddr3-1600`; `ddr3-2133`, or `ddr4-2400` to make the link the only difference).
+- Check the link on its own first, in seconds and without an OS: `configs/link_check.py --mode latency`, then `--mode bandwidth --link gen3x4`. See [`docs/pcie-link.md`](docs/pcie-link.md#checking-it).
 - `--fast-size` / `--slow-size` (default 512MiB / 2GiB). Both are placed below the X86 I/O hole at 3 GiB.
-- The slow controller sits under `board.memory.slow`, so its traffic is counted as remote (`slow_*` columns, `remote_access_frac`).
+- The slow controller sits under `board.memory.slow` (`board.memory.slow.mem` behind the link), so its traffic is counted as remote (`slow_*` columns, `remote_access_frac`). The link adds `link_*` columns: wire bytes with protocol overhead, utilization, round-trip latency, credit stalls.
+- `scripts/fs_runs.sh '^b-'` runs B on the same set as A, C and D, plus the Phase 2 node checks. `configs/run_all_working_sets.py --configs b --b-links gen3x4 gen4x8 gen4x16 --b-latency pcie cxl` sweeps the link over every working-set tier.
 - `--numactl=OPTS` (any config) runs the workload under `numactl` with those options, e.g. `--numactl=--membind=1` to put all of it on node 1. It is for checking the nodes (Phase 1 and 2), not for experiment runs, where placement is Linux's job. The setting is recorded as the `numactl` column. Needs the disk image rebuilt (`scripts/setup.sh disk`), which installs `numactl`.
 - `fs_result.json` and the CSV record the kernel's own placement mechanisms for every run: `guest_numa_balancing`, `guest_demotion_enabled` and `guest_memory_tiers` (tier id and its nodes). On the stock 6.8 kernel, expect node 1 in the same tier as node 0, so no demotion.
 

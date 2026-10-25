@@ -51,6 +51,7 @@ from gem5.utils.override import overrides
 from gem5.utils.requires import requires
 from m5.objects import (
     IdeDisk,
+    NoncoherentXBar,
     RawDiskImage,
     X86ACPISrat,
     X86ACPISratLAPICAffinity,
@@ -76,6 +77,12 @@ from tiered_memory.fsreport import (  # noqa: E402
 from tiered_memory.guest_script import run_script  # noqa: E402
 from tiered_memory.hostinfo import GEM5_DIR, git_commit, host_columns  # noqa: E402
 from tiered_memory.layout import srat_records  # noqa: E402
+from tiered_memory.pcie import (  # noqa: E402
+    DLL_OVERHEAD,
+    MAX_PAYLOAD,
+    MAX_READ_REQ,
+    TLP_OVERHEAD,
+)
 from tiered_memory.progress import Progress  # noqa: E402
 from tiered_memory.workloads import NAMES  # noqa: E402
 
@@ -243,8 +250,9 @@ class TwoTierMemory(AbstractMemorySystem):
     """Config B's memory: a fast memory system for node 0 and a slow one right above it for node 1.
 
     Each tier is an ordinary gem5 memory system (e.g. SingleChannelDDR4_2400), so each keeps its
-    own controller and DRAM timing. The slow tier is the child named `slow`, which puts "slow" in
-    its controller's stat path; that is what gem5stats counts as remote (SLOW_TIER_PATTERN).
+    own controller and DRAM timing; the slow one may sit behind a PCIe link (LinkedMemory). The
+    slow tier is the child named `slow`, which puts "slow" in its controller's stat path; that is
+    what gem5stats counts as remote (SLOW_TIER_PATTERN).
     """
 
     def __init__(self, fast, slow):
@@ -290,6 +298,88 @@ class TwoTierMemory(AbstractMemorySystem):
     @overrides(AbstractMemorySystem)
     def get_uninterleaved_range(self):
         return [self._mem_range]
+
+
+class LinkedMemory(AbstractMemorySystem):
+    """A memory system behind a PCIe link (gem5 fork's PCIeMemLink): config B's slow tier.
+
+    The link's host side is the only port the memory bus sees, so every access to this memory
+    crosses the link both ways; the memory system itself (e.g. SingleChannelDDR3_1600) is the
+    device's DRAM and keeps its own controller and timing. Children: `link`, and `mem` (so the
+    controller's stat path is board.memory.slow.mem..., still matched as the slow tier).
+    """
+
+    def __init__(self, mem, link):
+        super().__init__()
+        self.mem = mem
+        self.link = link
+        self._range = None
+
+    @overrides(AbstractMemorySystem)
+    def incorporate_memory(self, board):
+        self.mem.incorporate_memory(board)
+        ports = [port for _, port in self.mem.get_mem_ports()]
+        if len(ports) == 1:
+            self.link.mem_side_port = ports[0]
+        else:
+            # Several channels on the device: an internal bus fans the link out to them.
+            self.dev_bus = NoncoherentXBar(
+                width=64, frontend_latency=0, forward_latency=0, response_latency=0
+            )
+            self.link.mem_side_port = self.dev_bus.cpu_side_ports
+            for port in ports:
+                self.dev_bus.mem_side_ports = port
+
+    @overrides(AbstractMemorySystem)
+    def get_mem_ports(self):
+        return [(self._range, self.link.cpu_side_port)]
+
+    @overrides(AbstractMemorySystem)
+    def get_memory_controllers(self):
+        return self.mem.get_memory_controllers()
+
+    @overrides(AbstractMemorySystem)
+    def get_mem_interfaces(self):
+        return self.mem.get_mem_interfaces()
+
+    @overrides(AbstractMemorySystem)
+    def get_size(self):
+        return self.mem.get_size()
+
+    @overrides(AbstractMemorySystem)
+    def set_memory_range(self, ranges):
+        self.mem.set_memory_range(ranges)
+        self._range = ranges[0]
+
+    @overrides(AbstractMemorySystem)
+    def get_uninterleaved_range(self):
+        return self.mem.get_uninterleaved_range()
+
+
+def make_link(cfg):
+    """gem5 PCIeMemLink for a tiered_memory.pcie.LinkConfig. Needs the gem5 fork's link model."""
+    try:
+        from m5.objects import PCIeMemLink
+    except ImportError:
+        _die(
+            "this gem5 build has no PCIeMemLink: rebuild the gem5 fork at the commit pinned in "
+            "scripts/setup.sh (scripts/setup.sh fetch gem5), or run config B with --link none"
+        )
+    lat = cfg.latency
+    return PCIeMemLink(
+        gen=cfg.spec.gen,
+        lanes=cfg.spec.lanes,
+        dll_overhead=DLL_OVERHEAD,
+        tlp_overhead=TLP_OVERHEAD,
+        max_payload=MAX_PAYLOAD,
+        max_read_req=MAX_READ_REQ,
+        rc_latency=f"{lat.rc}ns",
+        phy_latency=f"{lat.phy}ns",
+        dev_latency=f"{lat.dev}ns",
+        tags=cfg.tags,
+        dev_credits=cfg.credits,
+        host_queue=cfg.host_queue,
+    )
 
 
 def add_srat(board, regions):

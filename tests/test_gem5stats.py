@@ -130,3 +130,50 @@ def test_disk_dma_is_zero_when_idle_and_blank_without_an_io_cache():
     idle = {**ONE_TIER, "board.cache_hierarchy.iocache.tags.occupancies::total": 0.0}
     assert summarize(idle)["disk_in_bytes"] == 0
     assert summarize(ONE_TIER)["disk_in_bytes"] == ""
+
+
+L = "board.memory.slow.link"
+LINKED = {
+    **COMMON,
+    "board.memory.mem_ctrl.dram.readBursts": 600,
+    "board.memory.mem_ctrl.dram.writeBursts": 200,
+    "board.memory.mem_ctrl.dram.avgMemAccLat": 40000,
+    # the slow controller sits under the link's memory system: still the slow tier
+    "board.memory.slow.mem.mem_ctrl.dram.readBursts": 300,
+    "board.memory.slow.mem.mem_ctrl.dram.writeBursts": 100,
+    "board.memory.slow.mem.mem_ctrl.dram.avgMemAccLat": 160000,
+    f"{L}.downTLPs": 400,
+    f"{L}.upTLPs": 300,
+    f"{L}.downWireBytes": 300 * 20 + 100 * 84,  # 300 MRd + 100 posted MWr
+    f"{L}.upWireBytes": 300 * 84,  # 300 CplD
+    f"{L}.downPayloadBytes": 100 * 64,
+    f"{L}.upPayloadBytes": 300 * 64,
+    f"{L}.downBusyTicks": 1e8,  # 0.1 ms of the 1 ms ROI
+    f"{L}.upBusyTicks": 2.5e8,
+    f"{L}.creditStallTicks": 1e7,
+    f"{L}.hostQueueFullRetries": 3,
+    f"{L}.tagLimitRetries": 2,
+    f"{L}.respondedReqs": 300,
+    f"{L}.totRespLatency": 300 * 600000,  # 600 ns each
+    f"{L}.avgRespLatency": 600000,
+}
+
+
+def test_link_columns():
+    row = summarize(LINKED)
+    assert row["slow_rd_bursts"] == 300
+    assert row["pcie_rd_bytes"] == 300 * 64  # still payload at the slow controller
+    assert row["link_down_bytes"] == 14400
+    assert row["link_up_bytes"] == 25200
+    assert row["link_tlps"] == 700
+    assert row["link_bw_gbs"] == pytest.approx(39600 / 0.001 / 1e9)
+    assert row["link_efficiency"] == round(400 * 64 / 39600, 4)
+    assert (row["link_down_util"], row["link_up_util"]) == (0.1, 0.25)
+    assert row["link_rd_lat_ns"] == 600.0
+    assert row["link_credit_stall_frac"] == 0.01
+    assert row["link_refusals"] == 5
+
+
+def test_no_link_columns_without_a_link():
+    for st in (ONE_TIER, TWO_TIER):
+        assert not [k for k in summarize(st) if k.startswith("link_")]
