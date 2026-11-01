@@ -1,0 +1,21 @@
+{
+ "guest": {
+  "demotion_enabled": "false",
+  "kernel": "6.8.0-52-generic",
+  "mem_total_kib": 469524,
+  "memory_tiers": {
+   "4": "0"
+  },
+  "nodes": {
+   "0": {
+    "cpus": "0",
+    "mem_kib": 469524
+   }
+  },
+  "numa_balancing": "0",
+  "numactl": "none",
+  "swap_total_kib": 0
+ },
+ "roi_completed": false,
+ "workload": ""
+}
