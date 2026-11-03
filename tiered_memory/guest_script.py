@@ -34,9 +34,15 @@ def swap_setup(device):
     ]
 
 
-def run_script(workload, wl_args, swap_device=None):
-    """The guest's run script: optional swap setup, then the workload under guest_run."""
-    cmd = shlex.join(["python3", "-m", "tiered_memory.guest_run", workload, *wl_args])
+def run_script(workload, wl_args, swap_device=None, numactl=None):
+    """The guest's run script: optional swap setup, then the workload under guest_run.
+
+    numactl: options string; guest_run then starts the workload (only) under numactl with them.
+    """
+    runner = ["python3", "-m", "tiered_memory.guest_run"]
+    if numactl:
+        runner.append(f"--numactl={numactl}")
+    cmd = shlex.join([*runner, workload, *wl_args])
     body = swap_setup(swap_device) if swap_device else []
     body.append(cmd)
     inner = "\n".join(f"    {line}" for line in body)

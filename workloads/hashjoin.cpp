@@ -43,25 +43,35 @@ int main(int argc, char** argv) {
         S[i] = {R[j].key, i};
     }
     uint64_t acc = 0, matches = 0;
+    RoiProgress prog((uint64_t)a.iters * (nr + ns)); // tuples: R built, then S probed
     roi_begin();
     for (int it = 0; it < a.iters; it++) {
+        size_t done = (size_t)it * (nr + ns);
         for (size_t s = 0; s < slots; s++)
             H[s].key = 0;
-        for (size_t i = 0; i < nr; i++) { // build
-            size_t s = mix(R[i].key) & mask;
-            while (H[s].key)
-                s = (s + 1) & mask;
-            H[s] = R[i];
-        }
-        for (size_t i = 0; i < ns; i++) { // probe
-            uint64_t k = S[i].key;
-            size_t s = mix(k) & mask;
-            while (H[s].key && H[s].key != k)
-                s = (s + 1) & mask;
-            if (H[s].key == k) {
-                acc += H[s].payload ^ S[i].payload;
-                matches++;
+        for (size_t lo = 0; lo < nr; lo += kProgressChunk) { // build
+            size_t hi = std::min(nr, lo + kProgressChunk);
+            for (size_t i = lo; i < hi; i++) {
+                size_t s = mix(R[i].key) & mask;
+                while (H[s].key)
+                    s = (s + 1) & mask;
+                H[s] = R[i];
             }
+            prog.at(done + hi);
+        }
+        for (size_t lo = 0; lo < ns; lo += kProgressChunk) { // probe
+            size_t hi = std::min(ns, lo + kProgressChunk);
+            for (size_t i = lo; i < hi; i++) {
+                uint64_t k = S[i].key;
+                size_t s = mix(k) & mask;
+                while (H[s].key && H[s].key != k)
+                    s = (s + 1) & mask;
+                if (H[s].key == k) {
+                    acc += H[s].payload ^ S[i].payload;
+                    matches++;
+                }
+            }
+            prog.at(done + nr + hi);
         }
     }
     double sec = roi_end();

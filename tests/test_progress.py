@@ -57,3 +57,29 @@ def test_no_budget_without_max_sim_sec():
     p = Progress()
     p.start(tick=0, insts=0, wall=0.0)
     assert not p.over_budget(10**20)
+
+
+def test_work_percent_shown_once_reported():
+    p = Progress(wall_gap=15)
+    p.work_step()  # before the ROI: ignored
+    p.start(tick=0, insts=0, wall=0.0)
+    assert "work" not in p.sample(tick=MS, insts=10, wall=1.0)
+    for _ in range(37):
+        p.work_step()
+    assert p.sample(tick=2 * MS, insts=20, wall=2.0).endswith("| work 37%")
+    for _ in range(80):
+        p.work_step()
+    assert p.work_pct == 100
+    p.start(tick=3 * MS, insts=0, wall=3.0)  # a new ROI starts from unknown again
+    assert p.work_pct is None
+
+
+def test_work_hypercall_matches_the_workloads():
+    import re
+    from pathlib import Path
+
+    from tiered_memory.progress import WORK_HYPERCALL
+
+    common = (Path(__file__).resolve().parents[1] / "workloads/common.h").read_text()
+    m = re.search(r"kHypercallRoiProgress = (\d+);", common)
+    assert m and int(m.group(1)) == WORK_HYPERCALL

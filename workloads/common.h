@@ -1,5 +1,6 @@
 // Shared harness: args, RNG, ROI markers, result line.
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,9 @@ extern "C" void map_m5_mem();
 // Hypercall numbers handled by gem5's exit handlers (src/python/gem5/simulate/exit_handler.py).
 constexpr uint64_t kHypercallRoiBegin = 4;
 constexpr uint64_t kHypercallRoiEnd = 5;
+// One per percent of the ROI's work done (RoiProgress); configs/fsboard.py counts them. Clear of
+// the numbers gem5's own handlers use (0-7, 1000).
+constexpr uint64_t kHypercallRoiProgress = 100;
 #endif
 
 struct Args {
@@ -90,6 +94,37 @@ inline double roi_end() {
 #endif
     return t;
 }
+
+// Work done through the ROI, as a percentage, for watching a long full-system run (the FS build
+// issues one hypercall per percent; other builds do nothing). Call at(done) with the units done so
+// far, out of `total`, from a loop that runs often enough for 1% steps but not per element: at() is
+// a compare and a branch, and the hypercalls are at most 100 per run. Placing the calls never
+// changes what the workload computes, so checksums are the same as before it was added.
+struct RoiProgress {
+    uint64_t total;
+    uint64_t next; // units done at which the next percent is reached
+    int pct = 0;
+    explicit RoiProgress(uint64_t t) : total(t ? t : 1), next(mark(1)) {}
+    uint64_t mark(int p) const { return (uint64_t)((double)total * p / 100); }
+    void at(uint64_t done) {
+        if (done >= next)
+            advance(done);
+    }
+    __attribute__((noinline)) void advance(uint64_t done) {
+        while (pct < 100 && done >= next) {
+            pct++;
+#ifdef USE_M5_FS
+            m5_hypercall_addr(kHypercallRoiProgress);
+#endif
+#ifdef ROI_PROGRESS_DEBUG // native check that a workload reaches exactly 100 (see tests)
+            fprintf(stderr, "PROGRESS %d\n", pct);
+#endif
+            next = pct < 100 ? mark(pct + 1) : UINT64_MAX;
+        }
+    }
+};
+// Chunk size for loops that call RoiProgress::at() once per chunk.
+constexpr size_t kProgressChunk = size_t(1) << 14;
 
 // work = workload-defined unit (bytes, flops, steps); see each file.
 inline void report(const char* name, const Args& a, double sec, double work, uint64_t checksum) {

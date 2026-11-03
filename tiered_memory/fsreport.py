@@ -177,6 +177,17 @@ def csv_row(outdir, report=None):
     row["guest_kernel"] = guest.get("kernel", "")
     row["guest_mem_total_kib"] = guest.get("mem_total_kib", "")
     row["guest_swap_total_kib"] = guest.get("swap_total_kib", "")
+    # The kernel's own placement mechanisms for this run (blank on runs from before they were
+    # recorded; "none" for memory tiers means the kernel exposes no tiers).
+    for k in ("numa_balancing", "demotion_enabled"):
+        v = guest.get(k)
+        row[f"guest_{k}"] = "" if v is None else v
+    if "memory_tiers" in guest:
+        tiers = guest["memory_tiers"] or {}
+        row["guest_memory_tiers"] = (
+            " ".join(f"{t}:{n}" for t, n in sorted(tiers.items(), key=lambda kv: int(kv[0])))
+            or "none"
+        )
     for node, nd in sorted((guest.get("nodes") or {}).items(), key=lambda kv: int(kv[0])):
         row[f"guest_node{node}_cpus"] = nd.get("cpus", "")
         row[f"guest_node{node}_mem_kib"] = nd.get("mem_kib", "")

@@ -34,12 +34,14 @@ from gem5.components.boards.x86_board import X86Board
 from gem5.components.cachehierarchies.classic.private_l1_private_l2_walk_cache_hierarchy import (
     PrivateL1PrivateL2WalkCacheHierarchy,
 )
+from gem5.components.memory.abstract_memory_system import AbstractMemorySystem
 from gem5.components.processors.cpu_types import CPUTypes
 from gem5.components.processors.simple_switchable_processor import SimpleSwitchableProcessor
 from gem5.isas import ISA
 from gem5.resources.resource import DiskImageResource, KernelResource
 from gem5.simulate.exit_handler import (
     AfterBootExitHandler,
+    ExitHandler,
     KernelBootedExitHandler,
     ScheduledExitEventHandler,
     WorkBeginExitHandler,
@@ -48,7 +50,15 @@ from gem5.simulate.exit_handler import (
 from gem5.simulate.simulator import Simulator
 from gem5.utils.override import overrides
 from gem5.utils.requires import requires
-from m5.objects import IdeDisk, RawDiskImage
+from m5.objects import (
+    IdeDisk,
+    NoncoherentXBar,
+    RawDiskImage,
+    X86ACPISrat,
+    X86ACPISratLAPICAffinity,
+    X86ACPISratMemAffinity,
+)
+from m5.params import AddrRange
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
@@ -67,7 +77,14 @@ from tiered_memory.fsreport import (  # noqa: E402
 )
 from tiered_memory.guest_script import run_script  # noqa: E402
 from tiered_memory.hostinfo import GEM5_DIR, git_commit, host_columns  # noqa: E402
-from tiered_memory.progress import Progress  # noqa: E402
+from tiered_memory.layout import srat_records  # noqa: E402
+from tiered_memory.pcie import (  # noqa: E402
+    DLL_OVERHEAD,
+    MAX_PAYLOAD,
+    MAX_READ_REQ,
+    TLP_OVERHEAD,
+)
+from tiered_memory.progress import WORK_HYPERCALL, Progress  # noqa: E402
 from tiered_memory.workloads import NAMES  # noqa: E402
 
 RESOURCES_JSON = REPO / "third_party/resources.json"
@@ -104,6 +121,12 @@ def add_common_args(p):
     p.add_argument("--l1i", default="32KiB")
     p.add_argument("--l2", default="256KiB", help="kept small, as in configs/run.py")
     p.add_argument("--disk", default=str(DEFAULT_DISK), help="disk image with our binaries")
+    p.add_argument(
+        "--numactl",
+        metavar="OPTS",
+        help="run the workload under numactl with these options, e.g. --numactl=--membind=1. "
+        "For validating the memory nodes only: experiment runs leave placement to Linux",
+    )
     p.add_argument(
         "--overwrite",
         action="store_true",
@@ -195,7 +218,9 @@ def build_board(args, memory, swap_device=None):
             local_path=str(disk),
             root_partition=res.get("disk_root_partition", res["root_partition"]),
         ),
-        readfile_contents=run_script(args.workload, args.wl_args, swap_device=swap_device),
+        readfile_contents=run_script(
+            args.workload, args.wl_args, swap_device=swap_device, numactl=args.numactl
+        ),
         kernel_args=kernel_args,
         disk_device=DISK_DEVICE,
     )
@@ -220,6 +245,163 @@ def add_swap_disk(board, image_path, delay):
     ide.clear_child("disks")
     ide.disks = disks + [swap]
     return SWAP_DEVICE
+
+
+class TwoTierMemory(AbstractMemorySystem):
+    """Config B's memory: a fast memory system for node 0 and a slow one right above it for node 1.
+
+    Each tier is an ordinary gem5 memory system (e.g. SingleChannelDDR4_2400), so each keeps its
+    own controller and DRAM timing; the slow one may sit behind a PCIe link (LinkedMemory). The
+    slow tier is the child named `slow`, which puts "slow" in its controller's stat path; that is
+    what gem5stats counts as remote (SLOW_TIER_PATTERN).
+    """
+
+    def __init__(self, fast, slow):
+        super().__init__()
+        self.fast = fast
+        self.slow = slow
+
+    def _tiers(self):
+        return (self.fast, self.slow)
+
+    @overrides(AbstractMemorySystem)
+    def incorporate_memory(self, board):
+        for t in self._tiers():
+            t.incorporate_memory(board)
+
+    @overrides(AbstractMemorySystem)
+    def get_mem_ports(self):
+        return [port for t in self._tiers() for port in t.get_mem_ports()]
+
+    @overrides(AbstractMemorySystem)
+    def get_memory_controllers(self):
+        return [c for t in self._tiers() for c in t.get_memory_controllers()]
+
+    @overrides(AbstractMemorySystem)
+    def get_mem_interfaces(self):
+        return [m for t in self._tiers() for m in t.get_mem_interfaces()]
+
+    @overrides(AbstractMemorySystem)
+    def get_size(self):
+        return self.fast.get_size() + self.slow.get_size()
+
+    @overrides(AbstractMemorySystem)
+    def set_memory_range(self, ranges):
+        # X86Board hands over one range starting at address 0 (see layout.py): fast memory at the
+        # bottom of it, slow memory directly above.
+        if len(ranges) != 1 or ranges[0].size() != self.get_size():
+            raise ValueError(f"TwoTierMemory needs one range of {self.get_size()} bytes")
+        self._mem_range = ranges[0]
+        fast = self.fast.get_size()
+        self.fast.set_memory_range([AddrRange(0, size=fast)])
+        self.slow.set_memory_range([AddrRange(fast, size=self.slow.get_size())])
+
+    @overrides(AbstractMemorySystem)
+    def get_uninterleaved_range(self):
+        return [self._mem_range]
+
+
+class LinkedMemory(AbstractMemorySystem):
+    """A memory system behind a PCIe link (gem5 fork's PCIeMemLink): config B's slow tier.
+
+    The link's host side is the only port the memory bus sees, so every access to this memory
+    crosses the link both ways; the memory system itself (e.g. SingleChannelDDR3_1600) is the
+    device's DRAM and keeps its own controller and timing. Children: `link`, and `mem` (so the
+    controller's stat path is board.memory.slow.mem..., still matched as the slow tier).
+    """
+
+    def __init__(self, mem, link):
+        super().__init__()
+        self.mem = mem
+        self.link = link
+        self._range = None
+
+    @overrides(AbstractMemorySystem)
+    def incorporate_memory(self, board):
+        self.mem.incorporate_memory(board)
+        ports = [port for _, port in self.mem.get_mem_ports()]
+        if len(ports) == 1:
+            self.link.mem_side_port = ports[0]
+        else:
+            # Several channels on the device: an internal bus fans the link out to them.
+            self.dev_bus = NoncoherentXBar(
+                width=64, frontend_latency=0, forward_latency=0, response_latency=0
+            )
+            self.link.mem_side_port = self.dev_bus.cpu_side_ports
+            for port in ports:
+                self.dev_bus.mem_side_ports = port
+
+    @overrides(AbstractMemorySystem)
+    def get_mem_ports(self):
+        return [(self._range, self.link.cpu_side_port)]
+
+    @overrides(AbstractMemorySystem)
+    def get_memory_controllers(self):
+        return self.mem.get_memory_controllers()
+
+    @overrides(AbstractMemorySystem)
+    def get_mem_interfaces(self):
+        return self.mem.get_mem_interfaces()
+
+    @overrides(AbstractMemorySystem)
+    def get_size(self):
+        return self.mem.get_size()
+
+    @overrides(AbstractMemorySystem)
+    def set_memory_range(self, ranges):
+        self.mem.set_memory_range(ranges)
+        self._range = ranges[0]
+
+    @overrides(AbstractMemorySystem)
+    def get_uninterleaved_range(self):
+        return self.mem.get_uninterleaved_range()
+
+
+def make_link(cfg):
+    """gem5 PCIeMemLink for a tiered_memory.pcie.LinkConfig. Needs the gem5 fork's link model."""
+    try:
+        from m5.objects import PCIeMemLink
+    except ImportError:
+        _die(
+            "this gem5 build has no PCIeMemLink: rebuild the gem5 fork at the commit pinned in "
+            "scripts/setup.sh (scripts/setup.sh fetch gem5), or run config B with --link none"
+        )
+    lat = cfg.latency
+    return PCIeMemLink(
+        gen=cfg.spec.gen,
+        lanes=cfg.spec.lanes,
+        dll_overhead=DLL_OVERHEAD,
+        tlp_overhead=TLP_OVERHEAD,
+        max_payload=MAX_PAYLOAD,
+        max_read_req=MAX_READ_REQ,
+        rc_latency=f"{lat.rc}ns",
+        phy_latency=f"{lat.phy}ns",
+        dev_latency=f"{lat.dev}ns",
+        tags=cfg.tags,
+        dev_credits=cfg.credits,
+        host_queue=cfg.host_queue,
+    )
+
+
+def add_srat(board, regions):
+    """Describe each region to Linux as its own NUMA node with an ACPI SRAT (gem5 fork, 0d92c4d9).
+
+    All CPUs are in node 0; the other nodes have memory only. The table goes in the RSDT and XSDT
+    next to X86Board's MADT. Call after the board is built (its workload holds the ACPI tables).
+    """
+    num_cpus = board.get_processor().get_num_cores()
+    cpus, mems = srat_records(regions, num_cpus)
+    records = [
+        X86ACPISratLAPICAffinity(proximity_domain=c.node, apic_id=c.apic_id) for c in cpus
+    ] + [
+        X86ACPISratMemAffinity(proximity_domain=m.node, base_address=m.start, length=f"{m.size}B")
+        for m in mems
+    ]
+    srat = X86ACPISrat(records=records, oem_id="gem5")
+    ptr = board.workload.acpi_description_table_pointer
+    ptr.rsdt.entries.append(srat)
+    ptr.xsdt.entries.append(srat)
+    return srat
 
 
 PROGRESS_EXIT = "tiered-memory progress"  # exit string of the scheduled progress exits
@@ -277,6 +459,18 @@ def _install_handlers():
             simulator.switch_processor()
             print(f"[{_sim_sec():.2f}s sim] ROI end: stats dumped, back on the boot CPU")
 
+    class WorkStep(ExitHandler, hypercall_num=WORK_HYPERCALL):
+        """The workload finished another percent of its ROI work; shown on the progress lines."""
+
+        @overrides(ExitHandler)
+        def _process(self, simulator):
+            if _progress is not None:
+                _progress.work_step()
+
+        @overrides(ExitHandler)
+        def _exit_simulation(self):
+            return False
+
     class ProgressTick(ScheduledExitEventHandler):
         """Prints a progress line and schedules the next one; never touches the stats."""
 
@@ -321,7 +515,13 @@ def run(board, args, config, settings=None, progress_extra=None):
         "config": config,
         "workload": args.workload,
         "workload_args": " ".join(args.wl_args),
-        "settings": {"roi_cpu": args.roi_cpu, "clk": args.clk, "l2": args.l2, **(settings or {})},
+        "settings": {
+            "roi_cpu": args.roi_cpu,
+            "clk": args.clk,
+            "l2": args.l2,
+            "numactl": args.numactl or "none",
+            **(settings or {}),
+        },
         "argv": sys.argv,
         "gem5_commit": git_commit(GEM5_DIR),
         "repo_commit": git_commit(REPO),

@@ -1,5 +1,7 @@
 // In-place sort of 16-byte records (key,payload). work = n*log2(n) comparisons (approx).
 // Runs a single sort; iters is ignored (re-sorting sorted data is not representative).
+// No RoiProgress: std::sort has no loop of ours to report from, and counting in the comparator
+// would add instructions to every compare.
 #include "common.h"
 #include <algorithm>
 #include <cmath>

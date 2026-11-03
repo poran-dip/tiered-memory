@@ -24,10 +24,15 @@ int main(int argc, char** argv) {
     // perm is a single-cycle permutation, so following next visits all n nodes.
     uint64_t idx = 0, acc = 0;
     size_t steps = n * (size_t)a.iters;
+    RoiProgress prog(steps);
     roi_begin();
-    for (size_t s = 0; s < steps; s++) {
-        idx = nd[idx].next;
-        acc += idx;
+    for (size_t lo = 0; lo < steps; lo += kProgressChunk) {
+        size_t hi = std::min(steps, lo + kProgressChunk);
+        for (size_t s = lo; s < hi; s++) {
+            idx = nd[idx].next;
+            acc += idx;
+        }
+        prog.at(hi);
     }
     double sec = roi_end();
     report("chase", a, sec, (double)steps, acc);

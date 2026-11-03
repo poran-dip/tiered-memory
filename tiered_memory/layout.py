@@ -72,3 +72,34 @@ def layout(fast, slow=0):
             "the configs only place memory below it"
         )
     return regions
+
+
+class CpuAffinity(NamedTuple):
+    """SRAT processor local APIC affinity: this CPU belongs to proximity domain `node`."""
+
+    node: int
+    apic_id: int
+
+
+class MemAffinity(NamedTuple):
+    """SRAT memory affinity: physical range [start, start + size) belongs to domain `node`."""
+
+    node: int
+    start: int
+    size: int
+
+
+def srat_records(regions, num_cpus):
+    """The SRAT contents that make Linux build one NUMA node per region.
+
+    Every CPU goes in node 0 with the fast memory. The slow node has memory and no CPUs, which is
+    how a PCIe or CXL memory expander appears. Linux ignores an SRAT that leaves E820 RAM
+    uncovered, so the memory records tile the regions exactly.
+    """
+    if num_cpus < 1:
+        raise ValueError("need at least one CPU")
+    if not regions or regions[0].node != 0:
+        raise ValueError("node 0 must come first: it holds the CPUs")
+    cpus = [CpuAffinity(0, apic) for apic in range(num_cpus)]
+    mems = [MemAffinity(r.node, r.start, r.size) for r in regions]
+    return cpus, mems

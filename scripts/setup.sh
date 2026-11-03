@@ -18,7 +18,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GEM5_REPO="${GEM5_REPO:-https://github.com/poran-dip/gem5.git}"
-GEM5_REF="${GEM5_REF:-618cf87d11c91cb2b4ca763b7a647b8e3cefe9fe}"
+# a64a128: the fork's main with the PCIeMemLink link model (config B) on top of the ACPI SRAT.
+GEM5_REF="${GEM5_REF:-a64a128d4f27f4c2c900244ec7336bac3d198abe}"
 GEM5_DIR="${GEM5_DIR:-$REPO_ROOT/third_party/gem5}"
 JOBS="${JOBS:-$(nproc)}"
 

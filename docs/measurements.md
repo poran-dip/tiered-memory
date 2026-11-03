@@ -18,19 +18,19 @@ machine, writes `results/native_sweep.csv`).
 | Local vs remote memory accesses       | `fast_rd_bursts`, `fast_wr_bursts`, `slow_rd_bursts`, `slow_wr_bursts`, `remote_access_frac` | `alloc_local_pages`, `alloc_other_pages`, `node<N>_alloc_hit`                                                                       | gem5: true accesses counted at each controller. Native: page allocations by the Linux allocator, not accesses (4 KiB pages).                                                                                                                                                                                                                                            |
 | Page migration / demotion / promotion | not in SE mode (no OS)                                                                       | `promote_pages`, `promote_candidates`, `demote_pages`, `numa_pages_migrated`, `migrate_success`, `migrate_fail`, `numa_hint_faults` | `/proc/vmstat` deltas over the whole run (allocation + ROI), in pages. Blank when the kernel lacks the counter. Becomes available in gem5 full-system mode.                                                                                                                                                                                                             |
 | Swap activity                         | `disk_in_bytes`, `disk_out_bytes` (full-system)                                              | `swap_in_pages`, `swap_out_pages`, `majflt`, `sys_majfault`                                                                         | `pswpin`/`pswpout` deltas. `majflt` is the process only; `sys_majfault` is system-wide. gem5: IDE DMA through the I/O cache during the ROI only (disk to memory, memory to disk), which in config D is swap traffic; blank in SE mode. The guest's `swap_*_pages` cover the whole process, so they also count setup and the final checksum read.                        |
-| PCIe traffic                          | `pcie_rd_bytes`, `pcie_wr_bytes`, `pcie_bw_gbs`                                              | not applicable                                                                                                                      | **Proxy:** payload bytes that reach the slow-tier controller. Excludes protocol and transaction overhead until the link itself is modeled. 0 until a slow tier exists.                                                                                                                                                                                                  |
+| PCIe traffic                          | `pcie_rd_bytes`, `pcie_wr_bytes`, `pcie_bw_gbs`; with a link: `link_*` (see below)           | not applicable                                                                                                                      | `pcie_*`: payload bytes that reach the slow-tier controller, the same meaning in every run (0 without a slow tier). `link_*`: config B's PCIe link itself, including TLP headers, framing and DLL overhead, plus utilization, round-trip latency and credit stalls ([`pcie-link.md`](pcie-link.md)). Only in runs that have a link.                                     |
 | CPU utilization                       | `cpu_busy_frac`                                                                              | `user_sec`, `sys_sec`, `cpu_util`                                                                                                   | Native `cpu_util = (user + sys) / wall`; it drops when the process blocks on swap. gem5 `cpu_busy_frac` is 1 minus idle cycles over cycles, from `idleCycles` or the timing CPU's `exec_context.thread_N.numIdleCycles`; blank if the CPU model counts neither. In SE mode a single thread is never idle, so expect about 1. It becomes meaningful in full-system mode. |
 
 ## Conventions
 
 - **Slow tier detection.** A gem5 memory controller whose stat path matches `--slow-pattern`
-  (default `slow|cxl|pcie`) is counted as the slow tier. Name the second tier's controller
-  accordingly when the two-tier config is written. Everything else is the fast tier.
+  (default `slow|cxl|pcie`) is counted as the slow tier. Config B's slow DRAM is the `slow` child of its memory system (`board.memory.slow`, or `board.memory.slow.mem` behind the PCIe link at `board.memory.slow.link`), so it matches. Everything else is the fast tier.
+- **PCIe link columns.** A run whose stats have a `PCIeMemLink` (any stat ending in `.downWireBytes`) gets the `link_*` columns: `link_down_bytes`, `link_up_bytes`, `link_tlps`, `link_bw_gbs` (wire bytes, overhead included), `link_efficiency` (payload share), `link_down_util`, `link_up_util`, `link_rd_lat_ns` (round trip at the link, DRAM included), `link_credit_stall_frac`, `link_refusals`. Config B's link settings (`link`, `link_latency`, `link_*_ns`, `link_tags`, `link_credits`, and the expected `link_expect_rd_ns` / `link_expect_rd_gbs`) are settings columns. Other runs have none of these, so earlier rows are unchanged.
 - **Raw stats kept.** Every gem5 run also writes `roi_stats.json` (all ROI stats) next to
   `stats.txt`, so a new metric can be added later with `--reparse` and no re-simulation.
 - **System-wide counters.** The Linux counters cover the whole machine, so run native sweeps on
   an otherwise idle system.
-- **Full-system runs.** `configs/a_baseline.py`, `c_ideal.py`, `d_swap.py` (and later B) write `fs_result.json` next to
+- **Full-system runs.** `configs/a_baseline.py`, `b_proposed.py`, `c_ideal.py`, `d_swap.py` write `fs_result.json` next to
   `stats.txt` (rebuild it without gem5: `python3 -m tiered_memory.fsreport <run dir>`): the same gem5 columns as the SE sweep, plus the Linux columns measured inside the
   guest by `tiered_memory/guest_run.py` and a `guest` entry (kernel, memory and swap size, NUMA nodes and their sizes).
   The guest-side Linux and CPU columns cover the whole workload process, as natively; the gem5
@@ -38,7 +38,7 @@ machine, writes `results/native_sweep.csv`).
   Runs with their `-d` directory under `results/fs/` are committed, and each adds a row to
   `results/gem5_fs.csv`: `run` (the directory name), `config`, `workload_args`, the config's
   settings (`fast_size`, `swap_size`, `swap_delay`, `roi_cpu`, ...), the report columns, the
-  `guest_*` columns (kernel, memory, swap, each node's CPUs and memory), `gem5_commit`,
+  `guest_*` columns (kernel, memory, swap, each node's CPUs and memory, and the kernel's NUMA balancing, demotion and memory-tier settings), `numactl` (`none` unless the workload was bound for a validation run), `gem5_commit`,
   `repo_commit`, `wall_sec` (host wall time of the whole run) and the `host_*` columns.
 - **Host metadata.** Native sweep rows carry `host_cpu`, `host_kernel`, `host_wsl` and
   `host_mem_mib` (rows written before this was added have them blank).
@@ -48,7 +48,7 @@ machine, writes `results/native_sweep.csv`).
 - Native IPC (`perf stat`).
 - ROI-only Linux counters. Today they span allocation plus ROI, which is where spill, swap and
   migration mostly happen anyway.
-- The slow tier (config B, needs the SRAT table in the gem5 fork) and the PCIe link model. Those
-  columns exist but stay blank or 0 until the corresponding piece is built.
+- Parts of PCIe the link model leaves out (non-posted DMA writes, replays, HMAT for the kernel's
+  memory tiers, ...): see [`pcie-link.md`](pcie-link.md#not-modeled).
 - Swap in gem5 (config D) runs on gem5's IDE disk model with a fixed per-request delay
   (`--swap-delay`), not an NVMe model: latency is configurable, queueing and bandwidth are not.

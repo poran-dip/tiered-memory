@@ -156,6 +156,24 @@ def test_csv_row_flattens_run_info_guest_nodes_and_host(tmp_path):
     assert "guest" not in row
 
 
+def test_csv_row_records_the_kernels_numa_policy(tmp_path):
+    guest = GUEST_TWO_NODES.replace(
+        '"nodes": {',
+        '"numa_balancing": "1", "demotion_enabled": "false", '
+        '"memory_tiers": {"4": "0-1", "1": "2"}, "nodes": {',
+    )
+    row = csv_row(tmp_path / "b-chase-64", _finished_run(tmp_path / "b-chase-64", guest))
+    assert row["guest_numa_balancing"] == "1"
+    assert row["guest_demotion_enabled"] == "false"
+    assert row["guest_memory_tiers"] == "1:2 4:0-1"  # sorted by tier id
+
+
+def test_csv_row_from_before_numa_policy_was_recorded_leaves_it_blank(tmp_path):
+    row = csv_row(tmp_path / "a-chase-64", _finished_run(tmp_path / "a-chase-64"))
+    assert row["guest_numa_balancing"] == ""
+    assert "guest_memory_tiers" not in row
+
+
 def test_add_to_csv_replaces_the_same_run_and_keeps_others(tmp_path):
     out = tmp_path / "gem5_fs.csv"
     add_to_csv({"run": "a-chase-64", "ns_per_work": 1}, out)

@@ -2,13 +2,15 @@
 
 Memory controllers are told apart by their stat path, so a two-tier config only has to name its
 slow controller to match SLOW_TIER_PATTERN (e.g. "mem_ctrl_slow"). With a single controller,
-every slow_* column is 0, which is the correct answer for an all-local system.
+every slow_* column is 0, which is the correct answer for an all-local system. A PCIe link in
+front of the slow tier (the gem5 fork's PCIeMemLink) adds the link_* columns; runs without one
+get none of those keys.
 """
 
 import re
 from contextlib import suppress
 
-from .schema import BURST_BYTES, SLOW_TIER_PATTERN, TICKS_PER_NS
+from .schema import BURST_BYTES, SLOW_TIER_PATTERN, TICKS_PER_NS, TICKS_PER_SEC
 
 _READ_BURSTS = re.compile(r"^(?P<prefix>.+)\.readBursts$")
 
@@ -75,6 +77,49 @@ def disk_dma(st):
     return {
         "disk_in_bytes": int(lines_in * CACHE_LINE),
         "disk_out_bytes": int(lines_out * CACHE_LINE),
+    }
+
+
+_LINK = re.compile(r"^(?P<prefix>.+)\.downWireBytes$")
+
+
+def pcie_links(st):
+    """Stat path prefixes of the PCIeMemLinks (gem5 fork) in the stats; empty if none."""
+    return sorted(m["prefix"] for k in st if (m := _LINK.match(k)))
+
+
+def link_columns(st, sim_sec):
+    """The PCIe link's own columns: wire traffic (with TLP overhead), utilization, latency.
+
+    Only for runs that have a link (config B since the link model); other runs get none of these
+    keys, so their reports are unchanged. Sums over links if a config ever has more than one.
+    """
+    links = pcie_links(st)
+    if not links:
+        return {}
+
+    def tot(name):
+        return sum(st.get(f"{p}.{name}", 0.0) for p in links)
+
+    down, up = tot("downWireBytes"), tot("upWireBytes")
+    ticks = sim_sec * TICKS_PER_SEC if sim_sec else 0
+    done = tot("respondedReqs")
+    payload = tot("downPayloadBytes") + tot("upPayloadBytes")
+    return {
+        # bytes on the wire each way: headers, framing and payload (pcie_* stays payload only)
+        "link_down_bytes": int(down),
+        "link_up_bytes": int(up),
+        "link_tlps": int(tot("downTLPs") + tot("upTLPs")),
+        "link_bw_gbs": _gbs(down + up, sim_sec),
+        # payload share of what crossed the link: what the protocol overhead costs
+        "link_efficiency": round(payload / (down + up), 4) if down + up else "",
+        "link_down_util": round(tot("downBusyTicks") / ticks, 4) if ticks else "",
+        "link_up_util": round(tot("upBusyTicks") / ticks, 4) if ticks else "",
+        # round trip of a non-posted request (mostly reads) at the link, root port in to root
+        # port out: includes the device's DRAM access
+        "link_rd_lat_ns": round(tot("totRespLatency") / done / TICKS_PER_NS, 2) if done else "",
+        "link_credit_stall_frac": round(tot("creditStallTicks") / ticks, 4) if ticks else "",
+        "link_refusals": int(tot("hostQueueFullRetries") + tot("tagLimitRetries")),
     }
 
 
@@ -151,11 +196,13 @@ def summarize(st, slow_pattern=SLOW_TIER_PATTERN):
             "remote_access_frac": (
                 round((s_rd + s_wr) / (tot_rd + tot_wr), 4) if tot_rd + tot_wr else ""
             ),
-            # PCIe traffic: payload bytes crossing to the slow tier. A proxy until the link itself
-            # is modeled (it excludes protocol/transaction overhead).
+            # PCIe traffic: payload bytes crossing to the slow tier, counted at its controller.
+            # Kept with this meaning for every run so rows stay comparable; the link's wire bytes
+            # (with protocol/transaction overhead) are the link_* columns.
             "pcie_rd_bytes": s_rd * BURST_BYTES,
             "pcie_wr_bytes": s_wr * BURST_BYTES,
             "pcie_bw_gbs": _gbs((s_rd + s_wr) * BURST_BYTES, sim_sec),
         }
     )
+    row.update(link_columns(st, sim_sec))
     return row

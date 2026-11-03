@@ -16,9 +16,11 @@ int main(int argc, char** argv) {
         B[i] = r.unit();
         C[i] = 0;
     }
+    const size_t nb = (N + BS - 1) / BS;
+    RoiProgress prog((uint64_t)a.iters * nb);
     roi_begin();
     for (int it = 0; it < a.iters; it++)
-        for (size_t ii = 0; ii < N; ii += BS)
+        for (size_t ii = 0; ii < N; ii += BS) {
             for (size_t kk = 0; kk < N; kk += BS)
                 for (size_t jj = 0; jj < N; jj += BS)
                     for (size_t i = ii; i < ii + BS; i++)
@@ -27,6 +29,8 @@ int main(int argc, char** argv) {
                             for (size_t j = jj; j < jj + BS; j++)
                                 C[i * N + j] += aik * B[k * N + j];
                         }
+            prog.at((size_t)it * nb + ii / BS + 1);
+        }
     double sec = roi_end();
     double s = 0;
     for (size_t i = 0; i < N * N; i += 101)
