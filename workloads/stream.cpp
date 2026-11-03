@@ -16,14 +16,25 @@ int main(int argc, char** argv) {
     // resident page, which is the one it needs next, so nearly every page cycles through swap. A
     // backward pass starts on the resident end and reaches the swapped front last, evicting pages
     // it has already finished with, so only the overflow is swapped in.
+    RoiProgress prog((uint64_t)a.iters * n);
     roi_begin();
     for (int it = 0; it < a.iters; it++) {
+        size_t done = (size_t)it * n;
         if (a.reverse)
-            for (size_t i = n; i-- > 0;)
-                A[i] = B[i] + 3.0 * C[i];
+            for (size_t hi = n; hi > 0;) {
+                size_t lo = hi > kProgressChunk ? hi - kProgressChunk : 0;
+                for (size_t i = hi; i-- > lo;)
+                    A[i] = B[i] + 3.0 * C[i];
+                prog.at(done + n - lo);
+                hi = lo;
+            }
         else
-            for (size_t i = 0; i < n; i++)
-                A[i] = B[i] + 3.0 * C[i];
+            for (size_t lo = 0; lo < n; lo += kProgressChunk) {
+                size_t hi = std::min(n, lo + kProgressChunk);
+                for (size_t i = lo; i < hi; i++)
+                    A[i] = B[i] + 3.0 * C[i];
+                prog.at(done + hi);
+            }
     }
     double sec = roi_end();
     double s = 0;

@@ -4,6 +4,10 @@ configs/fsboard.py schedules a gem5 tick exit, calls Progress.sample() when it f
 line and schedules the next exit Progress.interval ticks later. Kept free of gem5 imports so
 pytest can check the pacing and formatting.
 
+Work done: workloads that report it (all but sort) issue WORK_HYPERCALL once per percent of
+their ROI work. fsboard.py calls Progress.work_step() for each, and progress lines show
+"work N%" once the first percent is in (never for sort, which cannot report it).
+
 Pacing: simulated time per wall-clock second varies by orders of magnitude within one run. It
 crawls while the timing CPU executes the workload and races while the guest waits on a disk (each
 swap request is a single long delay that is cheap to simulate). So the interval adapts: after each
@@ -12,6 +16,9 @@ time, clamped to [MIN_INTERVAL, MAX_INTERVAL].
 """
 
 TICKS_PER_SEC = 10**12
+# Hypercall the workloads issue once per percent of their ROI work (RoiProgress in
+# workloads/common.h, kHypercallRoiProgress); configs/fsboard.py counts them into work_pct.
+WORK_HYPERCALL = 100
 FIRST_INTERVAL = 10**9  # 1 ms simulated before the first line
 MIN_INTERVAL = 10**7  # 10 us
 MAX_INTERVAL = 10**12  # 1 s
@@ -49,15 +56,22 @@ class Progress:
         self.max_ticks = int(max_sim_sec * TICKS_PER_SEC) if max_sim_sec else None
         self.active = False
         self.interval = FIRST_INTERVAL
+        self.work_pct = None  # percent of the ROI's work done, once the workload reports any
 
     def start(self, tick, insts, wall):
         self.active = True
         self.interval = FIRST_INTERVAL
+        self.work_pct = None
         self.t0, self.i0, self.w0 = tick, insts, wall
         self.t_last, self.i_last, self.w_last = tick, insts, wall
 
     def stop(self):
         self.active = False
+
+    def work_step(self):
+        """The workload reached its next percent of work (one WORK_HYPERCALL)."""
+        if self.active:
+            self.work_pct = min((self.work_pct or 0) + 1, 100)
 
     def over_budget(self, tick):
         """True once the ROI has used more simulated time than max_sim_sec allows."""
@@ -76,6 +90,8 @@ class Progress:
             f" | {(insts - self.i0) / 1e6:.1f}M insts ({rate})"
             f" | {sim_per_wall}"
         )
+        if self.work_pct is not None:
+            line += f" | work {self.work_pct}%"
         if extra:
             line += f" | {extra}"
         self.t_last, self.i_last, self.w_last = tick, insts, wall

@@ -19,9 +19,19 @@ STAGES = (
     ("after ROI", "ROI end"),
 )
 _PROGRESS = re.compile(
-    r"^\[[\d.]+s sim\] ROI \+(?P<sim>[\d.]+ \w+) \| [^|]+ wall"
+    r"^\[[\d.]+s sim\] ROI \+(?P<sim>[\d.]+ \w+) \| (?P<wall>[^|]+) wall"
     r" \| (?P<insts>[\d.]+)M insts \((?P<rate>[\d.]+)M insts/s\)"
 )
+_WORK = re.compile(r"\| work (?P<pct>\d+)%")
+_WALL = re.compile(r"^(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m)?(?:(?P<s>\d+)s)?$")
+
+
+def parse_wall(text):
+    """Seconds from fmt_wall's '42s', '3m05s' or '1h02m'."""
+    m = _WALL.match(text.strip())
+    if not m or not any(m.groups()):
+        raise ValueError(f"not a wall time: {text!r}")
+    return int(m["h"] or 0) * 3600 + int(m["m"] or 0) * 60 + int(m["s"] or 0)
 
 
 class LogWatch:
@@ -33,6 +43,8 @@ class LogWatch:
         self.roi_sim = None  # simulated time into the ROI, as printed ("12.40 ms")
         self.roi_minsts = 0.0  # millions of instructions since ROI begin
         self.rate = None  # recent simulation speed, millions of instructions per wall second
+        self.roi_wall = None  # wall seconds since ROI begin, at the last progress line
+        self.work_pct = None  # percent of the ROI's work the workload reports done
         self._partial = ""
 
     def feed(self, text):
@@ -48,6 +60,9 @@ class LogWatch:
                 self.roi_sim = m["sim"]
                 self.roi_minsts = float(m["insts"])
                 self.rate = float(m["rate"])
+                self.roi_wall = parse_wall(m["wall"])
+                w = _WORK.search(line)
+                self.work_pct = int(w["pct"]) if w else None
 
     def poll(self, path):
         """Read whatever was appended to the log at `path` since the last poll."""
@@ -61,7 +76,14 @@ class LogWatch:
         self.feed(data.decode(errors="replace"))
 
     def remaining_min(self, est_minsts, elapsed_min, est_min):
-        """Rough minutes left: from the ROI's speed once there is one, else from the estimate."""
+        """Rough minutes left in the run.
+
+        In the ROI: from the work the workload reports done, at the average pace so far; before
+        its first percent (or for sort, which reports none), from the instruction estimate at the
+        current speed. Before the ROI: the upfront estimate minus the time so far.
+        """
+        if self.stage == "ROI" and self.work_pct and self.roi_wall:
+            return self.roi_wall * (100 - self.work_pct) / self.work_pct / 60
         if self.stage == "ROI" and self.rate:
             return max(est_minsts - self.roi_minsts, 0) / self.rate / 60
         if self.stage == "after ROI":
@@ -70,10 +92,15 @@ class LogWatch:
 
 
 def status_line(name, watch, elapsed_sec, est_minsts, est_min):
-    """'  b-graph-over-448  12m05s  ROI +3.21 s sim, 843M of ~1406M insts (60%), ~9m left'."""
+    """'  b-graph-over-448  12m05s  ROI +3.21 s sim, work 58%, 843M insts, ~8m left'.
+
+    Without a work percentage yet: '..., 843M of ~1406M insts (60%), ~9m left' (estimated).
+    """
     left = watch.remaining_min(est_minsts, elapsed_sec / 60, est_min)
     parts = [watch.stage]
-    if watch.stage == "ROI" and watch.roi_sim:
+    if watch.stage == "ROI" and watch.roi_sim and watch.work_pct is not None:
+        parts = [f"ROI +{watch.roi_sim} sim, work {watch.work_pct}%, {watch.roi_minsts:.0f}M insts"]
+    elif watch.stage == "ROI" and watch.roi_sim:
         pct = watch.roi_minsts / est_minsts * 100 if est_minsts else 0
         pct_s = f"{pct:.0f}%" if pct <= 100 else ">100%, past the estimate"
         parts = [

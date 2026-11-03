@@ -26,10 +26,12 @@ everything else longest-first, which keeps the batch's total time close to the l
 divided across the -j slots.
 
 While the batch runs, a status block every --status-sec seconds (default 60) shows each run in
-flight: its stage (booting, setup, ROI, after ROI) and, in the ROI, simulated time, instructions
-against the estimate and roughly how long is left, from the progress lines gem5 writes to
-results/fs/<run>/gem5.log. "Time left" uses the ROI's current speed once it has one; the batch
-total adds the queued runs' estimates.
+flight: its stage (booting, setup, ROI, after ROI) and, in the ROI, simulated time, the work the
+workload reports done (every workload but sort; before its first percent, instructions against
+the estimate) and roughly how long is left, from the progress lines gem5 writes to
+results/fs/<run>/gem5.log. "Time left" comes from the reported work at the ROI's pace so far, or
+without it from the instruction estimate at the current speed; the batch total adds the queued
+runs' estimates.
 
 Each run is capped at --max-wall-h hours of host time; a run that hits it is killed, its row is
 recorded with roi_completed=False and exit_cause "wall timeout", and it counts as done. Rerun it

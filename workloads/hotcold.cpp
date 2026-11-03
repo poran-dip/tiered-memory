@@ -60,23 +60,29 @@ int main(int argc, char** argv) {
     size_t accesses = n * (size_t)a.iters;
     size_t per_phase = accesses / h.phases;
     uint64_t acc = 0;
+    RoiProgress prog(accesses);
     roi_begin();
     for (int ph = 0; ph < h.phases; ph++) {
         size_t lo = n - nh * (ph + 1); // hot window [lo, lo + nh); phase 0 is the tail
         size_t cnt = ph == h.phases - 1 ? accesses - per_phase * ph : per_phase;
-        for (size_t s = 0; s < cnt; s++) {
-            uint64_t x = r.next();
-            uint64_t pick = x & 0xffffffffULL;
-            uint64_t k = x >> 32;
-            size_t idx;
-            if (pick < cold_below) { // anywhere outside the hot window
-                idx = (size_t)(k % nc);
-                if (idx >= lo)
-                    idx += nh;
-            } else {
-                idx = lo + (size_t)(k % nh);
+        size_t done = per_phase * ph;
+        for (size_t c0 = 0; c0 < cnt; c0 += kProgressChunk) {
+            size_t c1 = std::min(cnt, c0 + kProgressChunk);
+            for (size_t s = c0; s < c1; s++) {
+                uint64_t x = r.next();
+                uint64_t pick = x & 0xffffffffULL;
+                uint64_t k = x >> 32;
+                size_t idx;
+                if (pick < cold_below) { // anywhere outside the hot window
+                    idx = (size_t)(k % nc);
+                    if (idx >= lo)
+                        idx += nh;
+                } else {
+                    idx = lo + (size_t)(k % nh);
+                }
+                acc += buf[idx].v;
             }
-            acc += buf[idx].v;
+            prog.at(done + c1);
         }
     }
     double sec = roi_end();

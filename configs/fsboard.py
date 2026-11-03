@@ -41,6 +41,7 @@ from gem5.isas import ISA
 from gem5.resources.resource import DiskImageResource, KernelResource
 from gem5.simulate.exit_handler import (
     AfterBootExitHandler,
+    ExitHandler,
     KernelBootedExitHandler,
     ScheduledExitEventHandler,
     WorkBeginExitHandler,
@@ -83,7 +84,7 @@ from tiered_memory.pcie import (  # noqa: E402
     MAX_READ_REQ,
     TLP_OVERHEAD,
 )
-from tiered_memory.progress import Progress  # noqa: E402
+from tiered_memory.progress import WORK_HYPERCALL, Progress  # noqa: E402
 from tiered_memory.workloads import NAMES  # noqa: E402
 
 RESOURCES_JSON = REPO / "third_party/resources.json"
@@ -457,6 +458,18 @@ def _install_handlers():
             (Path(m5.options.outdir) / ROI_MARKER).touch()
             simulator.switch_processor()
             print(f"[{_sim_sec():.2f}s sim] ROI end: stats dumped, back on the boot CPU")
+
+    class WorkStep(ExitHandler, hypercall_num=WORK_HYPERCALL):
+        """The workload finished another percent of its ROI work; shown on the progress lines."""
+
+        @overrides(ExitHandler)
+        def _process(self, simulator):
+            if _progress is not None:
+                _progress.work_step()
+
+        @overrides(ExitHandler)
+        def _exit_simulation(self):
+            return False
 
     class ProgressTick(ScheduledExitEventHandler):
         """Prints a progress line and schedules the next one; never touches the stats."""

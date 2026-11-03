@@ -77,23 +77,28 @@ int main(int argc, char** argv) {
     Rng r(a.seed);
     size_t ops = nkeys * (size_t)a.iters;
     uint64_t acc = 0, miss = 0;
+    RoiProgress prog(ops);
     roi_begin();
-    for (size_t o = 0; o < ops; o++) {
-        uint64_t key = key_of(z.next(r));
-        bool update = r.next() % 100 < 5;
-        size_t s = mix(key) & mask;
-        while (t[s].key != key && t[s].key)
-            s = (s + 1) & mask;
-        if (!t[s].key) {
-            miss++;
-            continue;
+    for (size_t lo = 0; lo < ops; lo += kProgressChunk) {
+        size_t hi = std::min(ops, lo + kProgressChunk);
+        for (size_t o = lo; o < hi; o++) {
+            uint64_t key = key_of(z.next(r));
+            bool update = r.next() % 100 < 5;
+            size_t s = mix(key) & mask;
+            while (t[s].key != key && t[s].key)
+                s = (s + 1) & mask;
+            if (!t[s].key) {
+                miss++;
+                continue;
+            }
+            if (update)
+                for (uint64_t& v : t[s].val)
+                    v += o;
+            else
+                for (uint64_t v : t[s].val)
+                    acc += v;
         }
-        if (update)
-            for (uint64_t& v : t[s].val)
-                v += o;
-        else
-            for (uint64_t v : t[s].val)
-                acc += v;
+        prog.at(hi);
     }
     double sec = roi_end();
     if (miss) {

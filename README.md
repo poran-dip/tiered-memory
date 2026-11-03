@@ -169,7 +169,7 @@ Options:
 - `--kvm-no-perf` is needed where the host has no hardware perf counters (WSL2, most VMs; check for `cpu` in `/sys/bus/event_source/devices/`).
 - `--fast-size` sets the fast DRAM size (A: 512MiB, C: 2560MiB by default).
 - `--max-sim-sec` (default 600) ends a run after that much simulated time with no progress. A guest kernel panic cannot stop gem5 while the KVM CPU runs, so this is what ends a failed run.
-- `--progress-sec` (default 15): during the ROI, print a progress line about every this many wall-clock seconds: simulated time into the ROI, wall time, instructions so far and the current simulation speed (config D adds how much of the swap file has been written). `0` turns it off. Progress lines don't touch the stats.
+- `--progress-sec` (default 15): during the ROI, print a progress line about every this many wall-clock seconds: simulated time into the ROI, wall time, instructions so far and the current simulation speed (config D adds how much of the swap file has been written). Once a workload reports it, the line ends with `work N%`: every workload except `sort` issues a hypercall at each percent of its ROI work (`RoiProgress` in `workloads/common.h`), at most 100 per run, and the checks leave every checksum unchanged and move ROI instruction counts by under 0.5% (callgrind). `0` turns it off. Progress lines don't touch the stats.
 - `--overwrite` replaces an earlier run's outputs in the `-d` directory. Without it a run refuses to start there, and it always refuses a directory another gem5 process is still writing to.
 - `--interactive` boots to a shell instead of running the workload.
 

@@ -83,6 +83,9 @@ int main(int argc, char** argv) {
         rank[i] = 1.0f / n;
 
     double edges = 0;
+    // Progress in edges: BFS counts as one pass over the edges (it may reach fewer), then one per
+    // PageRank iteration.
+    RoiProgress prog((uint64_t)(1 + a.iters) * m);
     roi_begin();
     // BFS (top-down, queue-based)
     for (size_t i = 0; i < n; i++)
@@ -100,6 +103,7 @@ int main(int argc, char** argv) {
             }
         }
         edges += off[u + 1] - off[u];
+        prog.at((uint64_t)edges);
     }
     // PageRank (pull): rank[v] = (1-d)/n + d * sum_{u in N(v)} rank[u]/deg(u)
     const float d = 0.85f, base = (1.0f - d) / n;
@@ -113,6 +117,7 @@ int main(int argc, char** argv) {
             for (uint64_t e = off[v]; e < off[v + 1]; e++)
                 s += contrib[adj[e]];
             rank[v] = base + d * s;
+            prog.at((uint64_t)(1 + it) * m + off[v + 1]);
         }
         edges += (double)m;
     }

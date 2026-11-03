@@ -56,6 +56,7 @@ int main(int argc, char** argv) {
     const float inv_sqrt_d = 1.0f / std::sqrt((float)D);
     float out[D];
     double bytes = 0;
+    RoiProgress prog((uint64_t)a.iters * L);
     roi_begin();
     for (int tok = 0; tok < a.iters; tok++) {
         size_t pos = (T0 + tok) % T;            // slot for this token's K/V
@@ -89,6 +90,7 @@ int main(int argc, char** argv) {
             for (size_t c = 0; c < C; c++) // residual into the next layer's input
                 x[c] += 0.1f * std::tanh(h[c]) + 0.1f * out[c % D];
             bytes += (double)C * C * 4 + (double)len * KV_ROW;
+            prog.at((size_t)tok * L + l + 1);
         }
     }
     double sec = roi_end();
