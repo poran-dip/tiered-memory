@@ -25,6 +25,12 @@ Order: the whole fits tier first, cheapest first, so a broken setup shows up wit
 everything else longest-first, which keeps the batch's total time close to the longest single run
 divided across the -j slots.
 
+While the batch runs, a status block every --status-sec seconds (default 60) shows each run in
+flight: its stage (booting, setup, ROI, after ROI) and, in the ROI, simulated time, instructions
+against the estimate and roughly how long is left, from the progress lines gem5 writes to
+results/fs/<run>/gem5.log. "Time left" uses the ROI's current speed once it has one; the batch
+total adds the queued runs' estimates.
+
 Each run is capped at --max-wall-h hours of host time; a run that hits it is killed, its row is
 recorded with roi_completed=False and exit_cause "wall timeout", and it counts as done. Rerun it
 with a bigger cap and --overwrite --only <run name>.
@@ -43,6 +49,7 @@ REPO = HERE.parent
 sys.path.insert(0, str(REPO))
 
 from tiered_memory import pcie  # noqa: E402
+from tiered_memory.batchstatus import LogWatch, batch_left_h, status_line  # noqa: E402
 from tiered_memory.fsreport import (  # noqa: E402
     FS_CSV,
     FS_DIR,
@@ -53,6 +60,7 @@ from tiered_memory.fsreport import (  # noqa: E402
     csv_row,
     release_outdir,
 )
+from tiered_memory.progress import fmt_wall  # noqa: E402
 from tiered_memory.workloads import FS_TIERS, NAMES, TIERS  # noqa: E402
 
 GEM5 = REPO / "third_party/gem5/build/X86/gem5.opt"
@@ -79,14 +87,18 @@ D_OVER_PAGING_MINSTS = {
 }
 
 
-def estimate_min(cfg, wl, tier):
-    t = FS_TIERS[wl][tier]
+def estimate_minsts(cfg, wl, tier):
+    """Estimated ROI instructions in millions, guest paging included (what gem5 will count)."""
     if tier == "over" and cfg == "a":
-        return RUN_OVERHEAD_MIN  # dies in setup
-    minsts = t.est_minsts
+        return 0  # dies in setup
+    minsts = FS_TIERS[wl][tier].est_minsts
     if tier == "over" and cfg == "d":
         minsts += D_OVER_PAGING_MINSTS.get(wl, 0)
-    return RUN_OVERHEAD_MIN + minsts / MINSTS_PER_MIN
+    return minsts
+
+
+def estimate_min(cfg, wl, tier):
+    return RUN_OVERHEAD_MIN + estimate_minsts(cfg, wl, tier) / MINSTS_PER_MIN
 
 
 def b_variants(a):
@@ -157,13 +169,35 @@ def wall_timeout(name, hours):
     release_outdir(outdir)
 
 
+def print_status(running, watches, todo, n_done, a):
+    """One line per run in flight (stage, ROI progress, time left), read from its gem5.log."""
+    now = time.monotonic()
+    lines, left = [], []
+    for name, (_, t0, log) in running.items():
+        watch, minsts, est = watches[name]
+        watch.poll(log.name)
+        lines.append(status_line(name, watch, now - t0, minsts, est))
+        left.append(watch.remaining_min(minsts, (now - t0) / 60, est))
+    hours = batch_left_h(left, [r[5] for r in todo], a.jobs)
+    print(
+        f"[{stamp()}] status  {len(running)} running, {len(todo)} queued, {n_done} finished;"
+        f" batch ~{fmt_wall(hours * 3600)} left (estimate)",
+        flush=True,
+    )
+    for line in lines:
+        print(line, flush=True)
+
+
 def _run_all(todo, running, a):
     """Keep up to a.jobs gem5 processes busy until todo is empty; returns names that failed."""
     failed = []
     cap = a.max_wall_h * 3600
+    watches = {}  # name -> (LogWatch, est. ROI M insts, est. minutes)
+    n_done = 0
+    last_status = time.monotonic()
     while todo or running:
         while todo and len(running) < a.jobs:
-            name, cfg, wl, _, wl_args, _, opts = todo.pop(0)
+            name, cfg, wl, tier, wl_args, est, opts = todo.pop(0)
             outdir = FS_DIR / name
             outdir.mkdir(parents=True, exist_ok=True)
             log = open(outdir / "gem5.log", "w")  # noqa: SIM115 (closed when the run ends)
@@ -175,6 +209,7 @@ def _run_all(todo, running, a):
                 start_new_session=True,
             )
             running[name] = (proc, time.monotonic(), log)
+            watches[name] = (LogWatch(), estimate_minsts(cfg, wl, tier), est)
             print(f"[{stamp()}] start   {name}  ({len(todo)} queued)", flush=True)
         time.sleep(5)
         for name, (proc, t0, log) in list(running.items()):
@@ -187,6 +222,7 @@ def _run_all(todo, running, a):
                 failed.append(name)
                 print(f"[{stamp()}] TIMEOUT {name} after {a.max_wall_h:g} h", flush=True)
                 del running[name]
+                n_done += 1
             elif rc is not None:
                 log.close()
                 mins = (time.monotonic() - t0) / 60
@@ -196,6 +232,10 @@ def _run_all(todo, running, a):
                 tag = "done   " if ok else "FAILED "
                 print(f"[{stamp()}] {tag} {name}  {mins:.1f} min  (log: {log.name})", flush=True)
                 del running[name]
+                n_done += 1
+        if a.status_sec and running and time.monotonic() - last_status >= a.status_sec:
+            print_status(running, watches, todo, n_done, a)
+            last_status = time.monotonic()
     return failed
 
 
@@ -220,6 +260,13 @@ def main():
     )
     p.add_argument("-j", "--jobs", type=int, default=1, help="gem5 processes at once")
     p.add_argument("--max-wall-h", type=float, default=6, help="kill a run after this many hours")
+    p.add_argument(
+        "--status-sec",
+        type=float,
+        default=60,
+        help="print the stage and ROI progress of every run in flight about every this many "
+        "seconds, read from each run's gem5.log (0 = off)",
+    )
     p.add_argument("--gem5-args", default="", help='extra config options, e.g. "--roi-cpu o3"')
     p.add_argument("--only", nargs="+", help="run only these run names")
     p.add_argument("--overwrite", action="store_true", help="rerun runs that are already done")
