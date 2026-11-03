@@ -145,8 +145,11 @@ Runs whose `-d` directory is under `results/fs/` are the ones kept in git: each 
 scripts/fs_runs.sh -n            # list what would run
 scripts/fs_runs.sh -j 3          # run, up to 3 gem5 processes at once
 scripts/fs_runs.sh 'stream-448'  # only runs whose name matches
+python3 scripts/merge_fs_results.py                # add rows for run directories not in the CSV
 python3 -m tiered_memory.fsreport --csv results/gem5_fs.csv results/fs/*/   # rebuild the CSV
 ```
+
+Runs made on several machines are combined by committing only their `results/fs/<run>/` directories, one branch per machine, then merging the branches and running `scripts/merge_fs_results.py`. It adds a row for each run missing from the CSV (or replaces an unfinished row with its finished rerun) and leaves every other row and every run directory as it is. The full rebuild with `fsreport --csv` also rewrites each run's `fs_result.json` from what its directory holds now, which drops the guest details of unfinished runs whose `guest_output.txt` isn't committed.
 
 `configs/run_all_working_sets.py` runs every workload at each of its working-set tiers under configs A, C and D, into `results/fs/<config>-<workload>-<tier>-<MiB>`. The tiers (sizes in `tiered_memory/workloads.py`, `FS_TIERS`) are **fits** (a sanity size, at most 64 MiB), **near** (just fits in config A, 336–384 MiB) and **over** (past config A's capacity, 448 MiB). The fits tier runs first, then everything else longest-first, with a per-run wall-time cap:
 

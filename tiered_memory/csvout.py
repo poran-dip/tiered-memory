@@ -51,7 +51,9 @@ def write_rows(path, rows):
     keys = list(dict.fromkeys(k for r in rows for k in r))
     tmp = p.with_suffix(p.suffix + ".tmp")
     with open(tmp, "w", newline="") as f:
-        wr = csv.DictWriter(f, fieldnames=keys, restval="")
+        # "\n", not the csv module's default "\r\n": the committed CSVs use Unix line endings, so a
+        # rewrite that changes one row shows in git as one row
+        wr = csv.DictWriter(f, fieldnames=keys, restval="", lineterminator="\n")
         wr.writeheader()
         wr.writerows(rows)
     os.replace(tmp, p)  # never leaves a half-written file behind

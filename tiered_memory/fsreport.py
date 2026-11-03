@@ -6,6 +6,9 @@ gem5, e.g. after adding a metric:
     python3 -m tiered_memory.fsreport results/fs/a-chase-64
     python3 -m tiered_memory.fsreport --csv results/gem5_fs.csv results/fs/*   # rebuild the CSV
 
+To add runs from other machines to the CSV without rewriting anything else, use
+scripts/merge_fs_results.py instead.
+
 Runs whose -d directory is under results/fs/ are the committed ones: each one also gets a row in
 results/gem5_fs.csv (keyed by the directory name), and results/fs/.gitignore keeps only the small
 files below (fs_result.json, roi_stats.json, guest_output.txt, run.json) in git.
