@@ -27,6 +27,8 @@ WORKLOADS = {
     "graph": Workload("edges", "graph", 64, 4, 8, 1),
     "kvstore": Workload("ops", "database (OLTP)", 64, 4, 8, 1),
     "hashjoin": Workload("tuples", "database (OLAP)", 64, 4, 8, 1),
+    # not a brief class: the hot/cold page skew that memory tiering is designed for
+    "hotcold": Workload("accesses", "hot/cold skew", 64, 20, 8, 2),
 }
 
 
@@ -45,6 +47,8 @@ class Tier(NamedTuple):
 # only has a fits size. kvstore's table rounds down to a power of two (any -s from 256 to 511 gives
 # a 256 MiB table), so near and over wait for a sizing fix. kvdecode over cap runs 2 tokens: the
 # first reads every page once; only from the second does LRU evict pages just before reuse.
+# hotcold runs 4 iters at near and over so the ROI lasts several simulated seconds, long enough
+# for NUMA balancing's scan (about a second per period) to find and move the hot pages.
 # est_minsts: ROI instructions counted with callgrind on the same gcc 13.3 -O2 build (within
 # ~1.3x of gem5's own count for chase and stream), excluding any paging work.
 FS_TIERS = {
@@ -56,6 +60,7 @@ FS_TIERS = {
     "kvstore": {"fits": Tier(64, 1, 298), "near": None, "over": None},
     "sort": {"fits": Tier(32, 1, 321), "near": Tier(384, 1, 4504), "over": Tier(448, 1, 5302)},
     "gemm": {"fits": Tier(1, 1, 198), "near": None, "over": None},
+    "hotcold": {"fits": Tier(64, 1, 24), "near": Tier(384, 4, 580), "over": Tier(448, 4, 676)},
 }
 TIERS = ("fits", "near", "over")
 

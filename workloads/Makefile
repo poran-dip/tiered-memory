@@ -6,7 +6,7 @@
 GEM5 ?= $(abspath ../third_party/gem5)
 CXX ?= g++
 CXXFLAGS = -O2 -std=c++17 -static
-WL = stream sort gemm chase kvdecode graph kvstore hashjoin
+WL = stream sort gemm chase kvdecode graph kvstore hashjoin hotcold
 
 native: $(addprefix build/native/,$(WL))
 build/native/%: %.cpp common.h

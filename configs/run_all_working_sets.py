@@ -64,7 +64,8 @@ CONFIG_FILES = {"a": "a_baseline.py", "b": "b_proposed.py", "c": "c_ideal.py", "
 # guest instructions per page moved (finding 002, F9). The paging figures below are rough guesses
 # per workload, in millions of instructions: sequential ones move about their overflow (stream,
 # hashjoin, sort), kvdecode's 2 tokens cycle the whole working set, and random ones (graph, chase)
-# can fault on every touch of an evicted page.
+# can fault on every touch of an evicted page. hotcold's hot window is touched last, so it stays
+# resident; its faults come from the 5% of accesses that land on swapped-out cold pages.
 MINSTS_PER_MIN = 60
 RUN_OVERHEAD_MIN = 1.5
 D_OVER_PAGING_MINSTS = {
@@ -74,6 +75,7 @@ D_OVER_PAGING_MINSTS = {
     "kvdecode": 2500,
     "graph": 3000,
     "chase": 10000,
+    "hotcold": 2000,
 }
 
 

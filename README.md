@@ -80,8 +80,9 @@ Each workload takes `-s <MiB>` (working set), `-i <iters>` and `-r <seed>`, and 
 | `graph`    | graph            | R-MAT power-law graph in CSR: BFS, then pull PageRank; hub vertices are hot           | edges       |
 | `kvstore`  | database (OLTP)  | YCSB-B-style hash-table point lookups/updates, scrambled Zipfian keys (`-z`)          | ops         |
 | `hashjoin` | database (OLAP)  | No-partition hash join: random build, sequential probe stream + random lookups        | tuples      |
+| `hotcold`  | hot/cold skew    | Random line reads, mostly in a hot window first touched last (node 1 over cap)        | accesses    |
 
-`kvstore` also takes `-z <theta>` (Zipfian skew, default 0.99; `0` = uniform). The list of workloads, their units and default sizes lives in [`tiered_memory/workloads.py`](tiered_memory/workloads.py); every script reads it.
+`kvstore` also takes `-z <theta>` (Zipfian skew, default 0.99; `0` = uniform). `hotcold` takes `-h <MiB>` (hot window, default 1/8 of `-s`), `-c <percent>` (accesses to the cold rest, default 5) and `-p <phases>` (the hot window moves one window lower each phase, onto pages that start cold; default 1). It is not a brief class: it is the case memory tiering is designed for, so it shows whether the kernel's tiering works at all before the other workloads ask whether it helps them. The list of workloads, their units and default sizes lives in [`tiered_memory/workloads.py`](tiered_memory/workloads.py); every script reads it.
 
 Still to add, both needing full-system Linux (Phase 1): compilation (e.g. `gcc -O2` on a large translation unit) and a real CPU LLM run (e.g. llama.cpp with a small model).
 
