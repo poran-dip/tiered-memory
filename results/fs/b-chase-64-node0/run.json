@@ -5,6 +5,7 @@
   "chase",
   "--kvm-no-perf",
   "--numactl=--membind=0",
+  "--overwrite",
   "--",
   "-s",
   "64",
@@ -12,7 +13,7 @@
   "1"
  ],
  "config": "B",
- "exit_cause": "user interrupt received",
+ "exit_cause": "m5_hypercall instruction encountered",
  "gem5_commit": "a64a128d4f27f4c2c900244ec7336bac3d198abe",
  "host": {
   "host_cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
@@ -20,7 +21,7 @@
   "host_mem_mib": 11961,
   "host_wsl": true
  },
- "repo_commit": "e0a35f3ff6aeef5a162bac3754e1d2a11de364ed-dirty",
+ "repo_commit": "3c53c313ff2cdd8695bd9c674e8592167d540ff2-dirty",
  "settings": {
   "clk": "3GHz",
   "fast_size": "512MiB",
@@ -39,8 +40,8 @@
   "slow_dram": "DDR3-1600",
   "slow_size": "2GiB"
  },
- "started": "2026-10-28T07:21:00+00:00",
- "wall_sec": 13.0,
+ "started": "2026-11-04T04:16:26+00:00",
+ "wall_sec": 68.9,
  "workload": "chase",
  "workload_args": "-s 64 -i 1"
 }
