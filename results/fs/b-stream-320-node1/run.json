@@ -1,0 +1,46 @@
+{
+ "argv": [
+  "configs/b_proposed.py",
+  "--workload",
+  "stream",
+  "--kvm-no-perf",
+  "--numactl=--membind=1",
+  "--",
+  "-s",
+  "320",
+  "-i",
+  "1"
+ ],
+ "config": "B",
+ "exit_cause": "m5_hypercall instruction encountered",
+ "gem5_commit": "a64a128d4f27f4c2c900244ec7336bac3d198abe",
+ "host": {
+  "host_cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+  "host_kernel": "6.18.54.1-microsoft-standard-WSL2",
+  "host_mem_mib": 11961,
+  "host_wsl": true
+ },
+ "repo_commit": "3c53c313ff2cdd8695bd9c674e8592167d540ff2-dirty",
+ "settings": {
+  "clk": "3GHz",
+  "fast_size": "512MiB",
+  "l2": "256KiB",
+  "link": "gen4x8",
+  "link_credits": 64,
+  "link_dev_ns": 80.0,
+  "link_expect_rd_gbs": 11.04,
+  "link_expect_rd_ns": 427.2,
+  "link_latency": "pcie",
+  "link_phy_ns": 30.0,
+  "link_rc_ns": 100.0,
+  "link_tags": 256,
+  "numactl": "--membind=1",
+  "roi_cpu": "timing",
+  "slow_dram": "DDR3-1600",
+  "slow_size": "2GiB"
+ },
+ "started": "2026-11-04T04:17:46+00:00",
+ "wall_sec": 173.0,
+ "workload": "stream",
+ "workload_args": "-s 320 -i 1"
+}
