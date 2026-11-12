@@ -1,0 +1,36 @@
+{
+ "argv": [
+  "/home/poran/tiered-memory/configs/d_swap.py",
+  "--workload",
+  "graph",
+  "--kvm-no-perf",
+  "--",
+  "-s",
+  "64",
+  "-i",
+  "1"
+ ],
+ "config": "D",
+ "exit_cause": "m5_hypercall instruction encountered",
+ "gem5_commit": "a64a128d4f27f4c2c900244ec7336bac3d198abe",
+ "host": {
+  "host_cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+  "host_kernel": "6.18.58.1-microsoft-standard-WSL2",
+  "host_mem_mib": 11961,
+  "host_wsl": true
+ },
+ "repo_commit": "cee2d2aac33f747eaa622925a480c5705d074889-dirty",
+ "settings": {
+  "clk": "3GHz",
+  "fast_size": "512MiB",
+  "l2": "256KiB",
+  "numactl": "none",
+  "roi_cpu": "timing",
+  "swap_delay": "80us",
+  "swap_size": "2GiB"
+ },
+ "started": "2026-11-12T07:31:41+00:00",
+ "wall_sec": 560.4,
+ "workload": "graph",
+ "workload_args": "-s 64 -i 1"
+}

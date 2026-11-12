@@ -1,0 +1,34 @@
+{
+ "argv": [
+  "/home/poran/tiered-memory/configs/a_baseline.py",
+  "--workload",
+  "stream",
+  "--kvm-no-perf",
+  "--",
+  "-s",
+  "64",
+  "-i",
+  "1"
+ ],
+ "config": "A",
+ "exit_cause": "m5_hypercall instruction encountered",
+ "gem5_commit": "a64a128d4f27f4c2c900244ec7336bac3d198abe",
+ "host": {
+  "host_cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
+  "host_kernel": "6.18.58.1-microsoft-standard-WSL2",
+  "host_mem_mib": 11961,
+  "host_wsl": true
+ },
+ "repo_commit": "cee2d2aac33f747eaa622925a480c5705d074889",
+ "settings": {
+  "clk": "3GHz",
+  "fast_size": "512MiB",
+  "l2": "256KiB",
+  "numactl": "none",
+  "roi_cpu": "timing"
+ },
+ "started": "2026-11-12T07:21:10+00:00",
+ "wall_sec": 37.0,
+ "workload": "stream",
+ "workload_args": "-s 64 -i 1"
+}
