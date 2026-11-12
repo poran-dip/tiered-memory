@@ -1,0 +1,6 @@
+sudo: unable to resolve host (none): Name or service not known
+sudo: unable to resolve host (none): Name or service not known
+SWAP_ON /dev/sdb
+GUESTINFO {"demotion_enabled": "false", "kernel": "6.8.0-52-generic", "mem_total_kib": 469524, "memory_tiers": {"4": "0"}, "nodes": {"0": {"cpus": "0", "mem_kib": 469524}}, "numa_balancing": "0", "numactl": "none", "swap_total_kib": 2097148}
+RESULT name=gemm ws_mb=1 iters=1 roi_sec=0.112983 work=47775744 checksum=59401
+LINUXSTATS {"alloc_local_pages": 476, "alloc_other_pages": 0, "cpu_util": 0.9225, "demote_pages": 0, "majflt": 6, "migrate_fail": 0, "migrate_success": 0, "minflt": 272, "node0_alloc_hit": 476, "node0_alloc_miss": 0, "numa_hint_faults": 0, "numa_pages_migrated": 0, "promote_candidates": 0, "promote_pages": 0, "returncode": 0, "swap_in_pages": 0, "swap_out_pages": 0, "sys_majfault": 6, "sys_sec": 0.017, "user_sec": 0.114, "wall_sec_guest": 0.141978}
