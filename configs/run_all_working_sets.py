@@ -86,6 +86,7 @@ D_OVER_PAGING_MINSTS = {
     "graph": 3000,
     "chase": 10000,
     "hotcold": 2000,
+    "kvstore": 20000,
 }
 
 

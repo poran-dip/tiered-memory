@@ -45,7 +45,7 @@ class Tier(NamedTuple):
 #   over  past A's capacity: 448 MiB overflowed by 30-60 MiB
 # None = not meaningful for that workload. gemm is the compute control (work grows as N^3), so it
 # only has a fits size. kvstore's table rounds down to a power of two (any -s from 256 to 511 gives
-# a 256 MiB table), so near and over wait for a sizing fix. kvdecode over cap runs 2 tokens: the
+# a 256 MiB table), so over uses 512 MiB and near has none. kvdecode over cap runs 2 tokens: the
 # first reads every page once; only from the second does LRU evict pages just before reuse.
 # hotcold runs 4 iters at near and over so the ROI lasts several simulated seconds, long enough
 # for NUMA balancing's scan (about a second per period) to find and move the hot pages.
@@ -57,7 +57,7 @@ FS_TIERS = {
     "kvdecode": {"fits": Tier(64, 1, 29), "near": Tier(384, 1, 175), "over": Tier(448, 2, 409)},
     "hashjoin": {"fits": Tier(64, 1, 113), "near": Tier(384, 1, 678), "over": Tier(448, 1, 791)},
     "graph": {"fits": Tier(64, 1, 201), "near": Tier(384, 1, 1205), "over": Tier(448, 1, 1406)},
-    "kvstore": {"fits": Tier(64, 1, 298), "near": None, "over": None},
+    "kvstore": {"fits": Tier(64, 1, 298), "near": None, "over": Tier(512, 1, 2403)},
     "sort": {"fits": Tier(32, 1, 321), "near": Tier(384, 1, 4504), "over": Tier(448, 1, 5302)},
     "gemm": {"fits": Tier(1, 1, 198), "near": None, "over": None},
     "hotcold": {"fits": Tier(64, 1, 24), "near": Tier(384, 4, 580), "over": Tier(448, 4, 676)},
