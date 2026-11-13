@@ -2,8 +2,9 @@
  "argv": [
   "/home/poran/tiered-memory/configs/d_swap.py",
   "--workload",
-  "hashjoin",
+  "sort",
   "--kvm-no-perf",
+  "--overwrite",
   "--",
   "-s",
   "448",
@@ -14,11 +15,11 @@
  "gem5_commit": "a64a128d4f27f4c2c900244ec7336bac3d198abe",
  "host": {
   "host_cpu": "12th Gen Intel(R) Core(TM) i5-12500H",
-  "host_kernel": "6.18.54.1-microsoft-standard-WSL2",
+  "host_kernel": "6.18.58.1-microsoft-standard-WSL2",
   "host_mem_mib": 11961,
   "host_wsl": true
  },
- "repo_commit": "3c53c313ff2cdd8695bd9c674e8592167d540ff2-dirty",
+ "repo_commit": "af3be0fc841069fc7e3e3c02b5cd51b1d5a59425-dirty",
  "settings": {
   "clk": "3GHz",
   "fast_size": "512MiB",
@@ -28,7 +29,7 @@
   "swap_delay": "80us",
   "swap_size": "2GiB"
  },
- "started": "2026-11-04T04:21:50+00:00",
- "workload": "hashjoin",
+ "started": "2026-11-12T10:01:47+00:00",
+ "workload": "sort",
  "workload_args": "-s 448 -i 1"
 }
