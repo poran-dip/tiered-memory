@@ -6,3 +6,6 @@
 !/*/roi_stats.json
 !/*/guest_output.txt
 !/*/run.json
+# A run a cap stopped early, and the ROI's progress curve (a few hundred bytes each).
+!/*/roi_capped.json
+!/*/roi_progress.json

@@ -39,6 +39,7 @@ with a bigger cap and --overwrite --only <run name>.
 """
 
 import argparse
+import csv
 import os
 import shlex
 import subprocess
@@ -50,7 +51,16 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 sys.path.insert(0, str(REPO))
 
-from tiered_memory import pcie  # noqa: E402
+# --dataset picks results/<dataset>/ and results/gem5_<dataset>.csv. tiered_memory.fsreport reads it
+# from TM_DATASET when it is imported (and the gem5 processes inherit it), so it is set here, before
+# the imports below; argparse declares the option again further down for --help and validation.
+for _i, _arg in enumerate(sys.argv):
+    if _arg == "--dataset" and _i + 1 < len(sys.argv):
+        os.environ["TM_DATASET"] = sys.argv[_i + 1]
+    elif _arg.startswith("--dataset="):
+        os.environ["TM_DATASET"] = _arg.split("=", 1)[1]
+
+from tiered_memory import caps, pcie  # noqa: E402
 from tiered_memory.batchstatus import LogWatch, batch_left_h, status_line  # noqa: E402
 from tiered_memory.fsreport import (  # noqa: E402
     FS_CSV,
@@ -67,6 +77,7 @@ from tiered_memory.workloads import FS_TIERS, NAMES, TIERS  # noqa: E402
 
 GEM5 = REPO / "third_party/gem5/build/X86/gem5.opt"
 CONFIG_FILES = {"a": "a_baseline.py", "b": "b_proposed.py", "c": "c_ideal.py", "d": "d_swap.py"}
+CAP_RANK = {"a": 0, "c": 0, "b": 1, "d": 2}  # B's cap comes from C; D's from B and C
 
 # Time estimate (for -n and the run order only; ±50%). The timing CPU simulates about 1M guest
 # instructions per wall second (finding 002, F9), and each run spends ~1.5 min booting on KVM and
@@ -104,17 +115,61 @@ def estimate_min(cfg, wl, tier):
     return RUN_OVERHEAD_MIN + estimate_minsts(cfg, wl, tier) / MINSTS_PER_MIN
 
 
+# The six config B variants of the final dataset, as link:latency[:tiering]. Worst and best link,
+# each with PCIe and CXL latencies; the best link again with the kernel's tiering on.
+FINAL_B = [
+    "gen3x4:pcie",
+    "gen3x4:cxl",
+    "gen4x16:pcie",
+    "gen4x16:cxl",
+    "gen4x16:pcie:on",
+    "gen4x16:cxl:on",
+]
+
+
+def parse_variant(text):
+    """'gen4x16:cxl:on' -> ('gen4x16', 'cxl', 'on'); latency and tiering are optional."""
+    parts = text.split(":")
+    if not 1 <= len(parts) <= 3:
+        raise ValueError(f"bad --b-variants entry {text!r}: expected link[:latency[:tiering]]")
+    link = parts[0]
+    lat = parts[1] if len(parts) > 1 and parts[1] else pcie.DEFAULT_LATENCY
+    tiering = parts[2] if len(parts) > 2 else "default"
+    pcie.parse_link(link)
+    if lat not in pcie.LATENCY_PRESETS:
+        raise ValueError(
+            f"bad latency {lat!r} in {text!r}: one of {', '.join(pcie.LATENCY_PRESETS)}"
+        )
+    if tiering not in ("default", "on", "off"):
+        raise ValueError(f"bad tiering {tiering!r} in {text!r}: default, on or off")
+    return link, lat, tiering
+
+
 def b_variants(a):
-    """[(run-name prefix, config options)] for config B: one per --b-links x --b-latency."""
+    """[(run-name prefix, config options)] for config B.
+
+    --b-variants lists them explicitly (or 'final'); otherwise one per --b-links x --b-latency,
+    with the kernel's default tiering. A tiering run is named like its link variant plus
+    -tiering (b_gen4x16-cxl-tiering-...), or -notiering when forced off.
+    """
+    explicit = getattr(a, "b_variants", None)
+    if explicit:
+        names = FINAL_B if explicit == ["final"] else explicit
+        specs = [parse_variant(t) for t in names]
+    else:
+        specs = [(link, lat, "default") for link in a.b_links for lat in a.b_latency]
     out = []
-    for link in a.b_links:
-        for lat in a.b_latency:
-            cfg = pcie.link_config(link, lat)
-            if cfg is None and lat != pcie.DEFAULT_LATENCY:
-                continue  # no link: the latency preset means nothing
-            tag = pcie.variant_tag(cfg)
-            opts = ["--link", link] + (["--link-latency", lat] if cfg is not None else [])
-            out.append(("b_" + tag if tag else "b", opts))
+    for link, lat, tiering in specs:
+        cfg = pcie.link_config(link, lat)
+        if cfg is None and lat != pcie.DEFAULT_LATENCY:
+            continue  # no link: the latency preset means nothing
+        tag = pcie.variant_tag(cfg)
+        prefix = "b_" + tag if tag else "b"
+        opts = ["--link", link] + (["--link-latency", lat] if cfg is not None else [])
+        if tiering != "default":
+            prefix += "-tiering" if tiering == "on" else "-notiering"
+            opts += ["--tiering", tiering]
+        out.append((prefix, opts))
     return out
 
 
@@ -135,7 +190,9 @@ def plan(a):
     if a.only:
         runs = [r for r in runs if r[0] in a.only]
     fits = sorted((r for r in runs if r[3] == "fits"), key=lambda r: r[5])
-    rest = sorted((r for r in runs if r[3] != "fits"), key=lambda r: -r[5])
+    # Capped runs need finished reference runs (C before B before D), so the order of the rest
+    # follows that dependency first and only then goes longest-first.
+    rest = sorted((r for r in runs if r[3] != "fits"), key=lambda r: (CAP_RANK[r[1]], -r[5]))
     return fits + rest
 
 
@@ -161,6 +218,36 @@ def gem5_cmd(name, cfg, wl, wl_args, a, opts=()):
 
 def stamp():
     return time.strftime("%H:%M:%S")
+
+
+def csv_rows():
+    """The dataset's CSV rows so far (caps are derived from finished runs in it)."""
+    if not FS_CSV.exists():
+        return []
+    with open(FS_CSV, newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def cap_spec(a):
+    return caps.CapSpec(d_x_b=a.cap_d_x_b, d_insts_x_c=a.cap_d_insts_x_c, b_x_c=a.cap_b_x_c)
+
+
+def drop_scratch(name):
+    """Delete a finished run's sparse swap image: it is scratch, and Explorer counts its 2 GiB."""
+    swap = FS_DIR / name / "swap.img"
+    if swap.exists():
+        swap.unlink()
+
+
+def dirty_tree():
+    """Uncommitted changes outside results/ (a dataset should come from one clean commit)."""
+    out = subprocess.run(
+        ["git", "status", "--porcelain", "--", ".", ":(exclude)results"],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return [line for line in out.splitlines() if line.strip()]
 
 
 def wall_timeout(name, hours):
@@ -198,9 +285,26 @@ def _run_all(todo, running, a):
     watches = {}  # name -> (LogWatch, est. ROI M insts, est. minutes)
     n_done = 0
     last_status = time.monotonic()
+    deferred = 0  # runs put back in a row because their reference run has not finished yet
     while todo or running:
         while todo and len(running) < a.jobs:
-            name, cfg, wl, tier, wl_args, est, opts = todo.pop(0)
+            item = todo.pop(0)
+            name, cfg, wl, tier, wl_args, est, opts = item
+            try:
+                opts = [*opts, *caps.cap_options(cfg, wl, tier, csv_rows(), cap_spec(a))]
+            except caps.MissingReference as e:
+                if running:  # the reference run may be in flight: try others, come back later
+                    todo.append(item)
+                    deferred += 1
+                    if deferred > len(todo):
+                        break  # every queued run is waiting on a reference
+                    continue
+                failed.append(name)
+                print(
+                    f"[{stamp()}] SKIPPED {name}: {e}; run its reference configs first", flush=True
+                )
+                continue
+            deferred = 0
             outdir = FS_DIR / name
             outdir.mkdir(parents=True, exist_ok=True)
             log = open(outdir / "gem5.log", "w")  # noqa: SIM115 (closed when the run ends)
@@ -222,6 +326,7 @@ def _run_all(todo, running, a):
                 proc.wait()
                 log.close()
                 wall_timeout(name, a.max_wall_h)
+                drop_scratch(name)
                 failed.append(name)
                 print(f"[{stamp()}] TIMEOUT {name} after {a.max_wall_h:g} h", flush=True)
                 del running[name]
@@ -230,6 +335,7 @@ def _run_all(todo, running, a):
                 log.close()
                 mins = (time.monotonic() - t0) / 60
                 ok = rc == 0 and (FS_DIR / name / FS_RESULT).exists()
+                drop_scratch(name)
                 if not ok:
                     failed.append(name)
                 tag = "done   " if ok else "FAILED "
@@ -244,7 +350,20 @@ def _run_all(todo, running, a):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--tiers", nargs="+", choices=TIERS, default=list(TIERS))
+    p.add_argument(
+        "--dataset",
+        default=os.environ.get("TM_DATASET", "fs"),
+        help="results/<dataset>/ holds the runs and results/gem5_<dataset>.csv their rows "
+        "(default %(default)s)",
+    )
+    p.add_argument(
+        "--tiers",
+        nargs="+",
+        choices=TIERS,
+        default=["fits", "over"],
+        help="working-set tiers; near was dropped (it costs much more than fits and shows the "
+        "same thing)",
+    )
     p.add_argument("--configs", nargs="+", choices=list(CONFIG_FILES), default=["a", "c", "d"])
     p.add_argument("--workloads", nargs="+", choices=NAMES, default=NAMES)
     p.add_argument(
@@ -261,8 +380,47 @@ def main():
         default=[pcie.DEFAULT_LATENCY],
         help="config B's link latency presets to run (default %(default)s)",
     )
+    p.add_argument(
+        "--b-variants",
+        nargs="+",
+        metavar="LINK[:LAT[:TIERING]]",
+        help="config B variants explicitly, e.g. gen4x16:cxl:on (tiering on); 'final' is the six "
+        "of the final dataset: " + " ".join(FINAL_B) + ". Replaces --b-links/--b-latency",
+    )
+    p.add_argument(
+        "--cap-d-x-b",
+        type=float,
+        default=caps.CapSpec().d_x_b,
+        help="D over tier: stop the ROI after this many times the longest config B ROI for the "
+        "same workload (0 = no cap). Needs those B runs finished first. Default %(default)s",
+    )
+    p.add_argument(
+        "--cap-d-insts-x-c",
+        type=float,
+        default=caps.CapSpec().d_insts_x_c,
+        help="D over tier: also stop at this many times config C's ROI instructions (0 = off). "
+        "Default %(default)s",
+    )
+    p.add_argument(
+        "--cap-b-x-c",
+        type=float,
+        default=caps.CapSpec().b_x_c,
+        help="B over tier: stop the ROI after this many times config C's ROI (0 = no cap). "
+        "Default %(default)s",
+    )
+    p.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="run even with uncommitted changes outside results/ (rows then carry -dirty commits)",
+    )
     p.add_argument("-j", "--jobs", type=int, default=1, help="gem5 processes at once")
-    p.add_argument("--max-wall-h", type=float, default=6, help="kill a run after this many hours")
+    p.add_argument(
+        "--max-wall-h",
+        type=float,
+        default=200,
+        help="backstop: kill a run after this many hours of host time. The ROI caps normally end "
+        "a slow run far sooner and keep its stats; a wall kill keeps nothing. Default %(default)s",
+    )
     p.add_argument(
         "--status-sec",
         type=float,
@@ -280,6 +438,19 @@ def main():
             pcie.parse_link(link)
         except ValueError as e:
             p.error(str(e))
+    if a.b_variants:
+        try:
+            b_variants(a)
+        except ValueError as e:
+            p.error(str(e))
+    if a.dataset != os.environ.get("TM_DATASET", "fs"):
+        p.error("--dataset must be given on the command line (not through a wrapper that drops it)")
+    if not a.dry_run and not a.allow_dirty and (dirty := dirty_tree()):
+        shown = "\n  ".join(dirty[:8])
+        sys.exit(
+            "uncommitted changes outside results/ (a dataset should come from one clean commit; "
+            f"--allow-dirty to run anyway):\n  {shown}"
+        )
 
     todo = []
     for run in plan(a):
@@ -293,9 +464,15 @@ def main():
         f"~{makespan_h(est, a.jobs):.1f} h with -j {a.jobs} (±50%)"
     )
     if a.dry_run:
-        for name, cfg, wl, _, wl_args, mins, opts in todo:
-            cmd = shlex.join(gem5_cmd(name, cfg, wl, wl_args, a, opts)[3:]).replace(f"{REPO}/", "")
-            print(f"~{mins:5.0f} min  {name}: {cmd}")
+        for name, cfg, wl, tier, wl_args, mins, opts in todo:
+            try:
+                cap_opts = caps.cap_options(cfg, wl, tier, csv_rows(), cap_spec(a))
+            except caps.MissingReference as e:
+                cap_opts, note = [], f"   [cap pending: {e}]"
+            else:
+                note = ""
+            cmd = shlex.join(gem5_cmd(name, cfg, wl, wl_args, a, [*opts, *cap_opts])[3:])
+            print(f"~{mins:5.0f} min  {name}: {cmd.replace(f'{REPO}/', '')}{note}")
         print(summary)
         return 0
     if not GEM5.exists():

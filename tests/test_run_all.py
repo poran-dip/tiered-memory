@@ -72,3 +72,47 @@ def test_estimate_minsts_includes_d_paging():
     assert ra.estimate_minsts("a", "stream", "over") == 0
     assert ra.estimate_minsts("c", "stream", "over") == tier.est_minsts
     assert ra.estimate_minsts("d", "stream", "over") > tier.est_minsts
+
+
+def test_final_b_variants_are_the_six_in_the_plan():
+    runs = ra.plan(args(configs=["b"], b_variants=["final"]))
+    ws = ra.FS_TIERS["chase"]["fits"].ws
+    opts = {r[0]: r[6] for r in runs}
+    assert set(opts) == {
+        f"b_gen3x4-chase-fits-{ws}",
+        f"b_gen3x4-cxl-chase-fits-{ws}",
+        f"b_gen4x16-chase-fits-{ws}",
+        f"b_gen4x16-cxl-chase-fits-{ws}",
+        f"b_gen4x16-tiering-chase-fits-{ws}",
+        f"b_gen4x16-cxl-tiering-chase-fits-{ws}",
+    }
+    assert opts[f"b_gen4x16-cxl-tiering-chase-fits-{ws}"] == [
+        "--link",
+        "gen4x16",
+        "--link-latency",
+        "cxl",
+        "--tiering",
+        "on",
+    ]
+    assert "--tiering" not in opts[f"b_gen4x16-chase-fits-{ws}"]
+
+
+def test_capped_runs_are_ordered_after_their_references():
+    runs = ra.plan(
+        args(
+            tiers=["over"],
+            configs=["d", "b", "c", "a"],
+            workloads=["hotcold"],
+            b_variants=["final"],
+        )
+    )
+    configs = [r[1] for r in runs]
+    assert configs.index("c") < configs.index("b") < configs.index("d")
+
+
+def test_bad_variant_is_an_error():
+    import pytest
+
+    for bad in ("gen9x9", "gen4x16:warp", "gen4x16:pcie:sometimes", "a:b:c:d"):
+        with pytest.raises(ValueError):
+            ra.parse_variant(bad)

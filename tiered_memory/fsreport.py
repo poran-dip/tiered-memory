@@ -42,16 +42,22 @@ GUEST_OUTPUT = "guest_output.txt"
 CONSOLE_FILE = "board.pc.com_1.device"
 ROI_MARKER = "roi_done"  # empty file written by the ROI-end handler
 ROI_STATS = "roi_stats.json"
+ROI_CAPPED = "roi_capped.json"  # written instead of ROI_MARKER when a cap stopped the ROI early
+ROI_PROGRESS = "roi_progress.json"  # (sim s, instructions) at each percent of the ROI's work
 FS_RESULT = "fs_result.json"
 RUN_INFO = "run.json"
 PID_FILE = "gem5.pid"  # written while a gem5 process owns the directory
 
-FS_DIR = RESULTS / "fs"  # committed full-system runs, one directory each
-FS_CSV = RESULTS / "gem5_fs.csv"
+# Which dataset of committed full-system runs this process reads and writes: results/<dataset>/<run>/
+# and results/gem5_<dataset>.csv. "fs" is the original dataset (Ubuntu kernel 6.8, no HMAT); set
+# TM_DATASET (or run_all_working_sets.py --dataset) to keep a new dataset apart, e.g. "fs_hmat".
+DATASET = os.environ.get("TM_DATASET", "fs")
+FS_DIR = RESULTS / DATASET  # committed full-system runs, one directory each
+FS_CSV = RESULTS / f"gem5_{DATASET}.csv"
 
 # Outputs of an earlier run that would be mistaken for this run's if left in place: a stale
 # roi_done in particular makes an unfinished run look complete.
-STALE_OUTPUTS = (ROI_MARKER, ROI_STATS, FS_RESULT, GUEST_OUTPUT, RUN_INFO)
+STALE_OUTPUTS = (ROI_MARKER, ROI_CAPPED, ROI_PROGRESS, ROI_STATS, FS_RESULT, GUEST_OUTPUT, RUN_INFO)
 
 
 def roi_completed(outdir):
@@ -62,9 +68,42 @@ def roi_completed(outdir):
     writes for a completed ROI alone; so with no stats.txt, roi_stats.json stands in for it.
     """
     outdir = Path(outdir)
+    if (outdir / ROI_CAPPED).exists():
+        return False  # stopped early by a cap: its stats are a partial ROI
     if (outdir / ROI_MARKER).exists():
         return True
     return not (outdir / "stats.txt").exists() and (outdir / ROI_STATS).exists()
+
+
+def read_json(path):
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def censored_columns(outdir):
+    """Report columns for a run a cap stopped early (see configs/fsboard.py); {} for any other run.
+
+    est_roi_sec_linear extrapolates the elapsed ROI time over the percent of work done. It is a
+    rough guide only: work is not spread evenly over time (a sort's early passes page, its later
+    ones do not), which is why the whole progress curve is kept in roi_capped.json.
+    """
+    cap = read_json(Path(outdir) / ROI_CAPPED)
+    if not cap:
+        return {}
+    cols = {
+        "censored_by": cap.get("reason", ""),
+        "censored_at_sim_sec": cap.get("sim_sec", ""),
+        "censored_at_insts": cap.get("insts", ""),
+        "censored_cap_sec": cap.get("cap_sec", ""),
+        "censored_cap_insts": cap.get("cap_insts", ""),
+        "censored_work_pct": cap.get("work_pct", ""),
+    }
+    pct, sec = cap.get("work_pct"), cap.get("sim_sec")
+    if pct and sec:
+        cols["est_roi_sec_linear"] = round(sec * 100.0 / pct, 6)
+    return cols
 
 
 def guest_text(outdir):
@@ -139,12 +178,15 @@ def collect(outdir, workload=None):
         row["checksum"] = res["checksum"]
     sp = outdir / "stats.txt"
     row["roi_completed"] = roi_completed(outdir)
-    if row["roi_completed"]:
+    censored = censored_columns(outdir)
+    row.update(censored)
+    if row["roi_completed"] or censored:
+        # A censored run's stats block is the ROI up to the cap; roi_completed=False says so.
         st = roi_stats(outdir)
         row.update(summarize(st))
         if sp.exists():
             (outdir / ROI_STATS).write_text(json.dumps(st, indent=1, sort_keys=True) + "\n")
-        if res and row.get("sim_sec"):
+        if row["roi_completed"] and res and row.get("sim_sec"):
             row.update(throughput_cols(workload, res.get("work"), row["sim_sec"]))
             row["roi_sec_guest"] = res.get("roi_sec", "")
     row["guest"] = parse_tagged(text, "GUESTINFO")

@@ -1,0 +1,11 @@
+# One directory per committed gem5 full-system run (gem5 -d results/fs_hmat/<run>).
+# Keep the report, the ROI stats, the guest's output and how the run was started; the rest
+# (stats.txt, config.*, the serial console, the sparse swap image) is large or regenerated.
+/*/*
+!/*/fs_result.json
+!/*/roi_stats.json
+!/*/guest_output.txt
+!/*/run.json
+# A run a cap stopped early, and the ROI's progress curve (a few hundred bytes each).
+!/*/roi_capped.json
+!/*/roi_progress.json

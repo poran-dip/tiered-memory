@@ -112,8 +112,11 @@ sudo dpkg --root="$MNT" --install "${DEBS[@]}" >/dev/null
 # first, so allow exactly these commands without a password (tiered_memory/guest_script.py).
 SUDOERS="$MNT/etc/sudoers.d/tiered-memory"
 printf '%s\n' \
-    '# Added by tiered-memory scripts/make_disk.sh: swap setup for config D.' \
-    'gem5 ALL=(root) NOPASSWD: /usr/sbin/mkswap, /usr/sbin/swapon, /usr/sbin/swapoff' |
+    '# Added by tiered-memory scripts/make_disk.sh: swap setup for config D, and the kernel' \
+    '# tiering switches (tiered_memory/tiering.py): tee on exactly these two files.' \
+    'gem5 ALL=(root) NOPASSWD: /usr/sbin/mkswap, /usr/sbin/swapon, /usr/sbin/swapoff' \
+    'gem5 ALL=(root) NOPASSWD: /usr/bin/tee /proc/sys/kernel/numa_balancing' \
+    'gem5 ALL=(root) NOPASSWD: /usr/bin/tee /sys/kernel/mm/numa/demotion_enabled' |
     sudo tee "$SUDOERS" >/dev/null
 sudo chown root:root "$SUDOERS"
 sudo chmod 0440 "$SUDOERS"

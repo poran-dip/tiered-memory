@@ -26,7 +26,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GEM5="${GEM5:-$REPO_ROOT/third_party/gem5/build/X86/gem5.opt}"
-OUT="$REPO_ROOT/results/fs"
+OUT="$REPO_ROOT/results/${TM_DATASET:-fs}"
 
 # name                config  workload  workload args
 RUNS="

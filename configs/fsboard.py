@@ -66,7 +66,9 @@ sys.path.insert(0, str(REPO))
 from tiered_memory.fsreport import (  # noqa: E402
     CONSOLE_FILE,
     FS_CSV,
+    ROI_CAPPED,
     ROI_MARKER,
+    ROI_PROGRESS,
     RUN_INFO,
     add_to_csv,
     claim_outdir,
@@ -75,7 +77,7 @@ from tiered_memory.fsreport import (  # noqa: E402
     is_committed_run,
     release_outdir,
 )
-from tiered_memory.guest_script import run_script  # noqa: E402
+from tiered_memory.guest_script import TIERING_MODES, run_script  # noqa: E402
 from tiered_memory.hostinfo import GEM5_DIR, git_commit, host_columns  # noqa: E402
 from tiered_memory.layout import srat_records  # noqa: E402
 from tiered_memory.pcie import (  # noqa: E402
@@ -152,6 +154,30 @@ def add_common_args(p):
         help="during the ROI, print a progress line about every this many wall-clock seconds "
         "(0 = off). Progress exits do not touch the stats",
     )
+    p.add_argument(
+        "--tiering",
+        choices=TIERING_MODES,
+        default="default",
+        help="the guest kernel's memory tiering, set before the workload starts: default leaves "
+        "Ubuntu's settings alone; on = demotion on and NUMA balancing in memory-tiering mode "
+        "(promotion); off = both off. It does nothing without a slow node that the kernel "
+        "treats as a lower tier (config B with HMAT)",
+    )
+    p.add_argument(
+        "--roi-cap-sec",
+        type=float,
+        metavar="SEC",
+        help="stop the ROI once it has run this many simulated seconds: the stats so far are kept "
+        "(roi_completed=False, censored_* columns, est_roi_sec_linear). Meant for runs that may "
+        "take far longer than the configs they are compared with",
+    )
+    p.add_argument(
+        "--roi-cap-insts",
+        type=float,
+        metavar="N",
+        help="the same, once the ROI has committed this many instructions (checked at each "
+        "progress sample, so it can overshoot by up to one sample)",
+    )
     p.add_argument("wl_args", nargs="*", help="workload arguments, after '--'")
 
 
@@ -219,7 +245,11 @@ def build_board(args, memory, swap_device=None):
             root_partition=res.get("disk_root_partition", res["root_partition"]),
         ),
         readfile_contents=run_script(
-            args.workload, args.wl_args, swap_device=swap_device, numactl=args.numactl
+            args.workload,
+            args.wl_args,
+            swap_device=swap_device,
+            numactl=args.numactl,
+            tiering=args.tiering,
         ),
         kernel_args=kernel_args,
         disk_device=DISK_DEVICE,
@@ -419,7 +449,11 @@ def _insts():
 
 
 def _schedule_progress():
-    m5.scheduleTickExitAbsolute(m5.curTick() + _progress.interval, PROGRESS_EXIT)
+    interval = _progress.interval
+    to_cap = _progress.ticks_to_cap(m5.curTick())
+    if to_cap is not None:
+        interval = min(interval, to_cap)  # land the next sample on the sim-time cap
+    m5.scheduleTickExitAbsolute(m5.curTick() + interval, PROGRESS_EXIT)
 
 
 def _sim_sec():
@@ -453,6 +487,7 @@ def _install_handlers():
         @overrides(WorkEndExitHandler)
         def _process(self, simulator):
             if _progress is not None:
+                _write_json(ROI_PROGRESS, _progress.snapshot(m5.curTick(), _insts()))
                 _progress.stop()
             m5.stats.dump()
             (Path(m5.options.outdir) / ROI_MARKER).touch()
@@ -465,7 +500,7 @@ def _install_handlers():
         @overrides(ExitHandler)
         def _process(self, simulator):
             if _progress is not None:
-                _progress.work_step()
+                _progress.work_step(m5.curTick(), _insts())
 
         @overrides(ExitHandler)
         def _exit_simulation(self):
@@ -482,6 +517,20 @@ def _install_handlers():
                 return  # a leftover exit from a finished ROI: ignore it, schedule nothing
             extra = _progress_extra() if _progress_extra else ""
             print(_progress.sample(m5.curTick(), _insts(), time.monotonic(), extra), flush=True)
+            reason = _progress.cap_reason(m5.curTick(), _insts())
+            if reason:
+                # Keep what the ROI measured so far: block 1 of stats.txt is then the partial ROI.
+                snap = _progress.snapshot(m5.curTick(), _insts(), reason)
+                m5.stats.dump()
+                _write_json(ROI_CAPPED, snap)
+                print(
+                    f"[{_sim_sec():.2f}s sim] ROI cap reached ({reason}) at "
+                    f"{snap['sim_sec']:.3f} s into the ROI, work {snap['work_pct']}%; stopping",
+                    flush=True,
+                )
+                _progress.stop()
+                self._stop = True
+                return
             if _progress.over_budget(m5.curTick()):
                 print("Giving up: the ROI has run longer than --max-sim-sec of simulated time")
                 self._stop = True
@@ -491,6 +540,10 @@ def _install_handlers():
         @overrides(ScheduledExitEventHandler)
         def _exit_simulation(self):
             return self._stop
+
+
+def _write_json(name, obj):
+    (Path(m5.options.outdir) / name).write_text(json.dumps(obj, sort_keys=True) + "\n")
 
 
 def _write_run_info(outdir, info):
@@ -520,6 +573,9 @@ def run(board, args, config, settings=None, progress_extra=None):
             "clk": args.clk,
             "l2": args.l2,
             "numactl": args.numactl or "none",
+            "tiering": args.tiering,
+            "roi_cap_sec": args.roi_cap_sec if args.roi_cap_sec else "",
+            "roi_cap_insts": int(args.roi_cap_insts) if args.roi_cap_insts else "",
             **(settings or {}),
         },
         "argv": sys.argv,
@@ -531,8 +587,13 @@ def run(board, args, config, settings=None, progress_extra=None):
     _write_run_info(outdir, info)
     wall0 = time.monotonic()
     _board, _progress_extra = board, progress_extra
-    if args.progress_sec > 0:
-        _progress = Progress(wall_gap=args.progress_sec, max_sim_sec=args.max_sim_sec)
+    if args.progress_sec > 0 or args.roi_cap_sec or args.roi_cap_insts:
+        _progress = Progress(
+            wall_gap=args.progress_sec or 15,
+            max_sim_sec=args.max_sim_sec,
+            cap_sec=args.roi_cap_sec,
+            cap_insts=args.roi_cap_insts,
+        )
     _install_handlers()
     sim = Simulator(board=board)
     # Window per stretch between exit events, not a total budget: gem5 restarts it at each exit.

@@ -13,6 +13,7 @@ The run script executes as the image's unprivileged `gem5` user. Swap setup (con
 import shlex
 
 from .fsreport import GUEST_OUTPUT
+from .tiering import MODES as TIERING_MODES
 
 GUEST_DIR = "/opt/tiered-memory"  # where make_disk.sh puts bin/ and tiered_memory/ in the image
 SWAP_FAILED = "SWAP SETUP FAILED"
@@ -34,14 +35,20 @@ def swap_setup(device):
     ]
 
 
-def run_script(workload, wl_args, swap_device=None, numactl=None):
+def run_script(workload, wl_args, swap_device=None, numactl=None, tiering="default"):
     """The guest's run script: optional swap setup, then the workload under guest_run.
 
     numactl: options string; guest_run then starts the workload (only) under numactl with them.
+    tiering: default, on or off (tiered_memory/tiering.py); guest_run sets the kernel's tiering
+    switches before the workload starts and stops the run if one does not take.
     """
+    if tiering not in TIERING_MODES:
+        raise ValueError(f"tiering must be one of {', '.join(TIERING_MODES)}, not {tiering!r}")
     runner = ["python3", "-m", "tiered_memory.guest_run"]
     if numactl:
         runner.append(f"--numactl={numactl}")
+    if tiering != "default":
+        runner.append(f"--tiering={tiering}")
     cmd = shlex.join([*runner, workload, *wl_args])
     body = swap_setup(swap_device) if swap_device else []
     body.append(cmd)

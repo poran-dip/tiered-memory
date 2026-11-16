@@ -196,3 +196,44 @@ def test_write_csv_rebuilds_from_run_directories(tmp_path):
 def test_only_runs_under_results_fs_are_committed(tmp_path):
     assert fsreport.is_committed_run(fsreport.FS_DIR / "a-chase-64")
     assert not fsreport.is_committed_run(tmp_path / "m5out" / "a-chase-64")
+
+
+def test_capped_run_is_incomplete_and_reports_how_far_it_got(tmp_path):
+    from tiered_memory.fsreport import ROI_CAPPED
+
+    out = tmp_path / "d-x-over-448"
+    out.mkdir()
+    (out / "stats.txt").write_text(STATS)
+    (out / ROI_CAPPED).write_text(
+        json.dumps(
+            {"reason": "sim-time", "sim_sec": 12.0, "insts": 5, "work_pct": 40, "cap_sec": 12.0}
+        )
+    )
+    row = collect(out, "chase")
+    assert row["roi_completed"] is False
+    assert row["censored_by"] == "sim-time" and row["censored_work_pct"] == 40
+    assert row["est_roi_sec_linear"] == 30.0  # 12 s for 40% of the work
+    assert "sim_sec" in row  # the partial ROI's own stats are kept
+
+
+def test_capped_stays_incomplete_after_stats_txt_is_dropped(tmp_path):
+    from tiered_memory.fsreport import ROI_CAPPED, roi_completed
+
+    out = tmp_path / "r"
+    out.mkdir()
+    (out / ROI_STATS).write_text("{}")
+    assert roi_completed(out)  # a committed, finished run
+    (out / ROI_CAPPED).write_text("{}")
+    assert not roi_completed(out)
+
+
+def test_dataset_selects_directory_and_csv(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("TM_DATASET", "fs_hmat")
+    mod = importlib.reload(fsreport)
+    try:
+        assert mod.FS_DIR.name == "fs_hmat" and mod.FS_CSV.name == "gem5_fs_hmat.csv"
+    finally:
+        monkeypatch.delenv("TM_DATASET")
+        importlib.reload(fsreport)

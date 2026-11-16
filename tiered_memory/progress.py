@@ -51,27 +51,71 @@ def fmt_wall(sec):
 class Progress:
     """Tracks one ROI; the caller supplies ticks, committed instructions and wall time."""
 
-    def __init__(self, wall_gap=15.0, max_sim_sec=None):
+    def __init__(self, wall_gap=15.0, max_sim_sec=None, cap_sec=None, cap_insts=None):
         self.wall_gap = wall_gap
         self.max_ticks = int(max_sim_sec * TICKS_PER_SEC) if max_sim_sec else None
+        # Caps stop a ROI that is taking too long and keep what it measured (see cap_reason).
+        self.cap_sec, self.cap_insts = cap_sec, cap_insts
+        self.cap_ticks = int(cap_sec * TICKS_PER_SEC) if cap_sec else None
         self.active = False
         self.interval = FIRST_INTERVAL
         self.work_pct = None  # percent of the ROI's work done, once the workload reports any
+        self.curve = []  # [sim s into the ROI, instructions into the ROI] at each percent of work
 
     def start(self, tick, insts, wall):
         self.active = True
         self.interval = FIRST_INTERVAL
         self.work_pct = None
+        self.curve = []
         self.t0, self.i0, self.w0 = tick, insts, wall
         self.t_last, self.i_last, self.w_last = tick, insts, wall
 
     def stop(self):
         self.active = False
 
-    def work_step(self):
-        """The workload reached its next percent of work (one WORK_HYPERCALL)."""
+    def work_step(self, tick=None, insts=None):
+        """The workload reached its next percent of work (one WORK_HYPERCALL).
+
+        With the current tick and committed instructions, the point also goes on the progress
+        curve, which is what lets a stopped run's total be estimated and the estimate be checked
+        against runs that finished.
+        """
         if self.active:
             self.work_pct = min((self.work_pct or 0) + 1, 100)
+            if tick is not None and insts is not None:
+                self.curve.append(
+                    [round((tick - self.t0) / TICKS_PER_SEC, 9), int(insts - self.i0)]
+                )
+
+    def cap_reason(self, tick, insts):
+        """'sim-time' or 'insts' once the ROI has used up a cap, else None.
+
+        The check runs at each progress sample, so a run can overshoot a cap by up to one sample
+        interval (see ticks_to_cap, which keeps the sim-time overshoot to nothing).
+        """
+        if self.cap_ticks is not None and tick - self.t0 >= self.cap_ticks:
+            return "sim-time"
+        if self.cap_insts is not None and insts - self.i0 >= self.cap_insts:
+            return "insts"
+        return None
+
+    def ticks_to_cap(self, tick):
+        """Ticks left before the sim-time cap (None without one), so the next sample can land on it."""
+        if self.cap_ticks is None:
+            return None
+        return max(self.t0 + self.cap_ticks - tick, 1)
+
+    def snapshot(self, tick, insts, reason=None):
+        """What roi_capped.json / roi_progress.json record about the ROI so far."""
+        return {
+            "reason": reason,
+            "sim_sec": round((tick - self.t0) / TICKS_PER_SEC, 9),
+            "insts": int(insts - self.i0),
+            "work_pct": self.work_pct,
+            "cap_sec": self.cap_sec,
+            "cap_insts": self.cap_insts,
+            "curve": self.curve,
+        }
 
     def over_budget(self, tick):
         """True once the ROI has used more simulated time than max_sim_sec allows."""

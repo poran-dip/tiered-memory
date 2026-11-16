@@ -32,6 +32,7 @@ import sys
 import time
 from pathlib import Path
 
+from tiered_memory import tiering
 from tiered_memory.linuxstats import NODE_DIR, cpu_columns, delta_columns, snapshot
 
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
@@ -106,7 +107,10 @@ def emit(tag, obj):
     print(f"{tag} {json.dumps(obj, sort_keys=True)}", flush=True)
 
 
-USAGE = "usage: python3 -m tiered_memory.guest_run [--numactl=OPTS] <workload> [workload args]"
+USAGE = (
+    "usage: python3 -m tiered_memory.guest_run [--numactl=OPTS] [--tiering=default|on|off] "
+    "<workload> [workload args]"
+)
 
 
 def workload_command(exe, args, numactl=None):
@@ -116,16 +120,31 @@ def workload_command(exe, args, numactl=None):
 
 
 def main(argv):
-    numactl = None
-    if argv and argv[0].startswith("--numactl="):
-        numactl, argv = argv[0].split("=", 1)[1], argv[1:]
+    numactl, mode = None, "default"
+    while argv and argv[0].startswith(("--numactl=", "--tiering=")):
+        key, value = argv[0].split("=", 1)
+        if key == "--numactl":
+            numactl = value
+        else:
+            mode = value
+        argv = argv[1:]
     if not argv:
         print(USAGE, file=sys.stderr)
         return 2
     name, args = argv[0], argv[1:]
     exe = BIN_DIR / name
-    info = guest_info()
+    try:
+        errors = tiering.apply(mode)
+    except ValueError as e:
+        print(f"{tiering.FAILED}: {e}")
+        return 1
+    if errors:
+        # Without the stop, tiering "on" would silently be the default kernel behaviour.
+        print(f"{tiering.FAILED}: " + "; ".join(errors))
+        return 1
+    info = guest_info()  # after the switches, so GUESTINFO shows what the workload ran under
     info["numactl"] = numactl or "none"
+    info["tiering"] = mode
     emit(GUESTINFO, info)
 
     before, ru_before = snapshot(), resource.getrusage(resource.RUSAGE_CHILDREN)

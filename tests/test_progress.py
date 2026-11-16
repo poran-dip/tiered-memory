@@ -83,3 +83,35 @@ def test_work_hypercall_matches_the_workloads():
     common = (Path(__file__).resolve().parents[1] / "workloads/common.h").read_text()
     m = re.search(r"kHypercallRoiProgress = (\d+);", common)
     assert m and int(m.group(1)) == WORK_HYPERCALL
+
+
+def test_cap_reason_sim_time_and_insts():
+    p = Progress(cap_sec=2.0, cap_insts=1000)
+    p.start(10**12, 500, 0.0)
+    assert p.cap_reason(2 * 10**12, 900) is None
+    assert p.cap_reason(3 * 10**12, 900) == "sim-time"
+    assert p.cap_reason(2 * 10**12, 1600) == "insts"
+
+
+def test_no_caps_means_never():
+    p = Progress()
+    p.start(0, 0, 0.0)
+    assert p.cap_reason(10**15, 10**12) is None
+    assert p.ticks_to_cap(5) is None
+
+
+def test_ticks_to_cap_lands_the_next_sample_on_the_cap():
+    p = Progress(cap_sec=1.0)
+    p.start(10**12, 0, 0.0)
+    assert p.ticks_to_cap(10**12 + 4 * 10**11) == 6 * 10**11
+
+
+def test_work_steps_build_the_progress_curve_and_snapshot():
+    p = Progress(cap_sec=9.0)
+    p.start(0, 100, 0.0)
+    p.work_step(10**12, 600)
+    p.work_step(3 * 10**12, 1100)
+    snap = p.snapshot(4 * 10**12, 1500, "sim-time")
+    assert snap["work_pct"] == 2
+    assert snap["curve"] == [[1.0, 500], [3.0, 1000]]
+    assert snap["sim_sec"] == 4.0 and snap["insts"] == 1400 and snap["reason"] == "sim-time"
