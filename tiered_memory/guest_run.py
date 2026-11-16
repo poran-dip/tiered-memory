@@ -108,7 +108,7 @@ def emit(tag, obj):
 
 
 USAGE = (
-    "usage: python3 -m tiered_memory.guest_run [--numactl=OPTS] [--tiering=default|on|off] "
+    "usage: python3 -m tiered_memory.guest_run [--numactl=OPTS] [--tiering=default|on|off] [--require-tiers=yes] "
     "<workload> [workload args]"
 )
 
@@ -120,13 +120,15 @@ def workload_command(exe, args, numactl=None):
 
 
 def main(argv):
-    numactl, mode = None, "default"
-    while argv and argv[0].startswith(("--numactl=", "--tiering=")):
+    numactl, mode, require_tiers = None, "default", False
+    while argv and argv[0].startswith(("--numactl=", "--tiering=", "--require-tiers=")):
         key, value = argv[0].split("=", 1)
         if key == "--numactl":
             numactl = value
-        else:
+        elif key == "--tiering":
             mode = value
+        else:
+            require_tiers = value == "yes"
         argv = argv[1:]
     if not argv:
         print(USAGE, file=sys.stderr)
@@ -145,7 +147,13 @@ def main(argv):
     info = guest_info()  # after the switches, so GUESTINFO shows what the workload ran under
     info["numactl"] = numactl or "none"
     info["tiering"] = mode
+    info["hmat_present"] = Path("/sys/firmware/acpi/tables/HMAT").exists()
     emit(GUESTINFO, info)
+    if require_tiers and (
+        not info["hmat_present"] or not tiering.distinct_tiers(info["memory_tiers"])
+    ):
+        print(f"{tiering.FAILED}: HMAT and distinct tiers for nodes 0/1 are required", flush=True)
+        return 1
 
     before, ru_before = snapshot(), resource.getrusage(resource.RUSAGE_CHILDREN)
     t0 = time.monotonic()

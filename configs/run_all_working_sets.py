@@ -21,9 +21,9 @@ B on the default link (gen4x8, pcie latencies) is named b-<workload>-<tier>-<MiB
 add a tag: b_gen3x4-..., b_gen4x8-cxl-..., b_nolink-... (--b-links none: DDR3 straight on the
 memory bus, no link).
 
-Order: the whole fits tier first, cheapest first, so a broken setup shows up within minutes. Then
-everything else longest-first, which keeps the batch's total time close to the longest single run
-divided across the -j slots.
+Order: fits first, then reference configs A/C before B before D. Reference-derived caps are
+opt-in; scripts/run_v2.sh enables the planned multipliers and HMAT setup. A capped run waits
+for its exact references, including all selected B variants for D's time cap.
 
 While the batch runs, a status block every --status-sec seconds (default 60) shows each run in
 flight: its stage (booting, setup, ROI, after ROI) and, in the ROI, simulated time, the work the
@@ -40,6 +40,8 @@ with a bigger cap and --overwrite --only <run name>.
 
 import argparse
 import csv
+import json
+import math
 import os
 import shlex
 import subprocess
@@ -65,13 +67,14 @@ from tiered_memory.batchstatus import LogWatch, batch_left_h, status_line  # noq
 from tiered_memory.fsreport import (  # noqa: E402
     FS_CSV,
     FS_DIR,
-    FS_RESULT,
+    accepted_report,
     add_to_csv,
     claim_outdir,
     collect,
     csv_row,
     release_outdir,
 )
+from tiered_memory.hostinfo import GEM5_DIR, file_sha256, git_commit  # noqa: E402
 from tiered_memory.progress import fmt_wall  # noqa: E402
 from tiered_memory.workloads import FS_TIERS, NAMES, TIERS  # noqa: E402
 
@@ -211,6 +214,12 @@ def gem5_cmd(name, cfg, wl, wl_args, a, opts=()):
         cmd.append("--kvm-no-perf")  # WSL2 and most VMs have no hardware perf counters
     if a.overwrite:
         cmd.append("--overwrite")
+    if getattr(a, "kernel", None):
+        cmd += ["--kernel", a.kernel]
+    if getattr(a, "hmat", False) and cfg == "b":
+        cmd.append("--hmat")
+    if cfg == "a" and "-over-" in name:
+        cmd.append("--expect-oom")
     cmd += list(opts)
     cmd += shlex.split(a.gem5_args)
     return cmd + ["--", *wl_args]
@@ -232,6 +241,53 @@ def cap_spec(a):
     return caps.CapSpec(d_x_b=a.cap_d_x_b, d_insts_x_c=a.cap_d_insts_x_c, b_x_c=a.cap_b_x_c)
 
 
+def reference_names(a, cfg, wl, tier):
+    if tier != "over":
+        return []
+    ws = FS_TIERS[wl][tier].ws
+    names = []
+    if (cfg == "b" and a.cap_b_x_c) or (cfg == "d" and a.cap_d_insts_x_c):
+        names.append(caps.run_name("c", wl, tier, ws))
+    if cfg == "d" and a.cap_d_x_b:
+        names.extend(caps.run_name(prefix, wl, tier, ws) for prefix, _ in b_variants(a))
+    return names
+
+
+def run_caps(a, cfg, wl, tier, wl_args, pending=()):
+    refs = reference_names(a, cfg, wl, tier)
+    waiting = set(refs).intersection(pending)
+    if waiting:
+        raise caps.MissingReference(
+            "references still queued/running: " + ", ".join(sorted(waiting))
+        )
+    rows = reference_rows(a)
+    return caps.cap_options(
+        cfg,
+        wl,
+        tier,
+        rows,
+        cap_spec(a),
+        workload_args=wl_args,
+        reference_names=refs,
+        identity=a.reference_identity,
+        provenance=True,
+    )
+
+
+def reference_rows(a):
+    rows = csv_rows()
+    # HMAT and non-HMAT B results must never set each other's D cap.
+    return [
+        r
+        for r in rows
+        if (
+            not r.get("run", "").startswith("b")
+            or str(r.get("hmat", "False")).lower() == str(a.hmat).lower()
+        )
+        and all(str(r.get(k, "")) == str(v) for k, v in a.reference_identity.items())
+    ]
+
+
 def drop_scratch(name):
     """Delete a finished run's sparse swap image: it is scratch, and Explorer counts its 2 GiB."""
     swap = FS_DIR / name / "swap.img"
@@ -241,13 +297,18 @@ def drop_scratch(name):
 
 def dirty_tree():
     """Uncommitted changes outside results/ (a dataset should come from one clean commit)."""
-    out = subprocess.run(
-        ["git", "status", "--porcelain", "--", ".", ":(exclude)results"],
-        cwd=REPO,
-        capture_output=True,
-        text=True,
-    ).stdout
-    return [line for line in out.splitlines() if line.strip()]
+    dirty = []
+    for repo in (REPO, GEM5_DIR):
+        paths = ["--", ".", ":(exclude)results"] if repo == REPO else []
+        out = subprocess.run(
+            ["git", "status", "--porcelain", *paths],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        dirty.extend(f"{repo.name}: {line}" for line in out.splitlines() if line.strip())
+    return dirty
 
 
 def wall_timeout(name, hours):
@@ -291,7 +352,8 @@ def _run_all(todo, running, a):
             item = todo.pop(0)
             name, cfg, wl, tier, wl_args, est, opts = item
             try:
-                opts = [*opts, *caps.cap_options(cfg, wl, tier, csv_rows(), cap_spec(a))]
+                pending = {r[0] for r in todo} | set(running)
+                opts = [*opts, *run_caps(a, cfg, wl, tier, wl_args, pending)]
             except caps.MissingReference as e:
                 if running:  # the reference run may be in flight: try others, come back later
                     todo.append(item)
@@ -334,10 +396,11 @@ def _run_all(todo, running, a):
             elif rc is not None:
                 log.close()
                 mins = (time.monotonic() - t0) / 60
-                ok = rc == 0 and (FS_DIR / name / FS_RESULT).exists()
-                drop_scratch(name)
+                ok = rc == 0 and accepted_report(FS_DIR / name)
                 if not ok:
                     failed.append(name)
+                else:
+                    drop_scratch(name)
                 tag = "done   " if ok else "FAILED "
                 print(f"[{stamp()}] {tag} {name}  {mins:.1f} min  (log: {log.name})", flush=True)
                 del running[name]
@@ -350,6 +413,8 @@ def _run_all(todo, running, a):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--kernel", help="guest kernel ELF used by every config in this batch")
+    p.add_argument("--hmat", action="store_true", help="publish HMAT and verify tiers in config B")
     p.add_argument(
         "--dataset",
         default=os.environ.get("TM_DATASET", "fs"),
@@ -390,21 +455,21 @@ def main():
     p.add_argument(
         "--cap-d-x-b",
         type=float,
-        default=caps.CapSpec().d_x_b,
+        default=0,
         help="D over tier: stop the ROI after this many times the longest config B ROI for the "
         "same workload (0 = no cap). Needs those B runs finished first. Default %(default)s",
     )
     p.add_argument(
         "--cap-d-insts-x-c",
         type=float,
-        default=caps.CapSpec().d_insts_x_c,
+        default=0,
         help="D over tier: also stop at this many times config C's ROI instructions (0 = off). "
         "Default %(default)s",
     )
     p.add_argument(
         "--cap-b-x-c",
         type=float,
-        default=caps.CapSpec().b_x_c,
+        default=0,
         help="B over tier: stop the ROI after this many times config C's ROI (0 = no cap). "
         "Default %(default)s",
     )
@@ -433,6 +498,33 @@ def main():
     p.add_argument("--overwrite", action="store_true", help="rerun runs that are already done")
     p.add_argument("-n", "--dry-run", action="store_true", help="list the runs and the estimate")
     a = p.parse_args()
+    if a.jobs < 1:
+        p.error("--jobs must be positive")
+    for key in ("cap_d_x_b", "cap_d_insts_x_c", "cap_b_x_c", "status_sec", "max_wall_h"):
+        value = getattr(a, key)
+        if not math.isfinite(value) or value < 0 or (key == "max_wall_h" and value == 0):
+            p.error(f"invalid --{key.replace('_', '-')}")
+    extra = argparse.ArgumentParser(add_help=False)
+    extra.add_argument("--roi-cpu", default="timing")
+    extra.add_argument("--clk", default="3GHz")
+    extra.add_argument("--l2", default="256KiB")
+    extra.add_argument("--numactl", default="none")
+    extra.add_argument("--kernel")
+    extra.add_argument("--hmat", action="store_true")
+    tuning, _ = extra.parse_known_args(shlex.split(a.gem5_args))
+    if tuning.kernel or tuning.hmat:
+        p.error("pass --kernel/--hmat to the batch runner directly, not inside --gem5-args")
+    a.reference_identity = {k: getattr(tuning, k) for k in ("roi_cpu", "clk", "l2", "numactl")}
+    a.reference_identity["gem5_commit"] = git_commit(GEM5_DIR)
+    a.reference_identity["repo_commit"] = git_commit(REPO)
+    resources = REPO / "third_party/resources.json"
+    kernel = a.kernel or (
+        json.loads(resources.read_text()).get("kernel") if resources.exists() else None
+    )
+    if kernel and Path(kernel).is_file():
+        a.reference_identity["kernel_sha256"] = file_sha256(kernel)
+    elif not a.dry_run:
+        p.error("guest kernel missing: supply --kernel or run setup resources")
     for link in a.b_links:
         try:
             pcie.parse_link(link)
@@ -454,9 +546,25 @@ def main():
 
     todo = []
     for run in plan(a):
-        if (FS_DIR / run[0] / FS_RESULT).exists() and not a.overwrite:
+        outdir = FS_DIR / run[0]
+        if accepted_report(outdir) and not a.overwrite:
+            if a.hmat or a.kernel:
+                saved = csv_row(outdir)
+                expected = {**a.reference_identity, "workload_args": " ".join(run[4])}
+                if run[1] == "b":
+                    expected["hmat"] = a.hmat
+                mismatch = [k for k, v in expected.items() if str(saved.get(k, "")) != str(v)]
+                if mismatch:
+                    p.error(
+                        f"{run[0]} belongs to a different setup ({', '.join(mismatch)}); "
+                        "choose a new dataset or explicitly overwrite it"
+                    )
             print(f"skip    {run[0]} (done)")
         else:
+            if (outdir / "run.json").exists() and not a.overwrite and not a.dry_run:
+                p.error(
+                    f"{run[0]} is incomplete or failed; inspect it and retry with --overwrite --only {run[0]}"
+                )
             todo.append(run)
     est = [r[5] for r in todo]
     summary = (
@@ -466,7 +574,7 @@ def main():
     if a.dry_run:
         for name, cfg, wl, tier, wl_args, mins, opts in todo:
             try:
-                cap_opts = caps.cap_options(cfg, wl, tier, csv_rows(), cap_spec(a))
+                cap_opts = run_caps(a, cfg, wl, tier, wl_args)
             except caps.MissingReference as e:
                 cap_opts, note = [], f"   [cap pending: {e}]"
             else:
@@ -475,6 +583,21 @@ def main():
             print(f"~{mins:5.0f} min  {name}: {cmd.replace(f'{REPO}/', '')}{note}")
         print(summary)
         return 0
+    planned = {r[0] for r in todo}
+    rows = reference_rows(a)
+    for _, cfg, wl, tier, wl_args, _, _ in todo:
+        external = set(reference_names(a, cfg, wl, tier)) - planned
+        compatible = {
+            r["run"]
+            for r in rows
+            if caps.completed(r) and shlex.split(r.get("workload_args", "")) == wl_args
+        }
+        if missing := external - compatible:
+            p.error(
+                "missing completed compatible references: "
+                + ", ".join(sorted(missing))
+                + "; schedule them first, or explicitly disable the dependent cap"
+            )
     if not GEM5.exists():
         sys.exit(f"{GEM5} not built; run scripts/setup.sh")
     print(summary, flush=True)

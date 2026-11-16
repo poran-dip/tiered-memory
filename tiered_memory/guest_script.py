@@ -35,12 +35,15 @@ def swap_setup(device):
     ]
 
 
-def run_script(workload, wl_args, swap_device=None, numactl=None, tiering="default"):
+def run_script(
+    workload, wl_args, swap_device=None, numactl=None, tiering="default", require_tiers=False
+):
     """The guest's run script: optional swap setup, then the workload under guest_run.
 
     numactl: options string; guest_run then starts the workload (only) under numactl with them.
     tiering: default, on or off (tiered_memory/tiering.py); guest_run sets the kernel's tiering
     switches before the workload starts and stops the run if one does not take.
+    require_tiers: reject the run unless HMAT is present and node 1 is in a lower tier.
     """
     if tiering not in TIERING_MODES:
         raise ValueError(f"tiering must be one of {', '.join(TIERING_MODES)}, not {tiering!r}")
@@ -49,6 +52,8 @@ def run_script(workload, wl_args, swap_device=None, numactl=None, tiering="defau
         runner.append(f"--numactl={numactl}")
     if tiering != "default":
         runner.append(f"--tiering={tiering}")
+    if require_tiers:
+        runner.append("--require-tiers=yes")
     cmd = shlex.join([*runner, workload, *wl_args])
     body = swap_setup(swap_device) if swap_device else []
     body.append(cmd)
@@ -61,5 +66,7 @@ def run_script(workload, wl_args, swap_device=None, numactl=None, tiering="defau
         "{\n"
         f"{inner}\n"
         f"}} 2>&1 | tee /tmp/{GUEST_OUTPUT}\n"
+        "guest_rc=${PIPESTATUS[0]}\n"
+        f'printf \'GUEST_EXIT {{"returncode": %s}}\\n\' "$guest_rc" | tee -a /tmp/{GUEST_OUTPUT}\n'
         f"gem5-bridge writefile /tmp/{GUEST_OUTPUT} {GUEST_OUTPUT}\n"
     )

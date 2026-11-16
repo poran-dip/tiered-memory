@@ -1,0 +1,8 @@
+# Small reproducible artifacts for any results/<dataset>/<run>/ directory.
+/*/*/*
+!/*/*/fs_result.json
+!/*/*/roi_stats.json
+!/*/*/guest_output.txt
+!/*/*/run.json
+!/*/*/roi_capped.json
+!/*/*/roi_progress.json

@@ -21,12 +21,22 @@ if [ "${1:-}" = "-n" ]; then DRY=(-n); shift; fi
 
 DS="${TM_DATASET:-fs_hmat}"
 J="${JOBS:-3}"
+if [ ${#DRY[@]} -eq 0 ] && [ ! -f "${TM_KERNEL:-}" ]; then
+    echo "Set TM_KERNEL to a gem5-compatible kernel ELF with CPU-less HMAT memory-tier support; see docs/v2-setup.md" >&2
+    exit 2
+fi
+KERNEL=()
+[ -z "${TM_KERNEL:-}" ] || KERNEL=(--kernel "$TM_KERNEL")
 WL=()
 if [ "$1" = pilot ]; then WORKLOADS=hotcold; fi
 # shellcheck disable=SC2206  # word splitting of WORKLOADS is the point
 [ -z "${WORKLOADS:-}" ] || WL=(--workloads $WORKLOADS)
 
-run() { python3 configs/run_all_working_sets.py --dataset "$DS" -j "$J" "${DRY[@]}" "${WL[@]}" "$@"; }
+run() {
+    python3 configs/run_all_working_sets.py --dataset "$DS" -j "$J" \
+        --hmat --b-variants final --cap-b-x-c 20 --cap-d-x-b 5 --cap-d-insts-x-c 100 \
+        "${KERNEL[@]}" "${DRY[@]}" "${WL[@]}" "$@"
+}
 
 stage() {
     case "$1" in

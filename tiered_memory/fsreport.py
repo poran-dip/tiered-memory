@@ -31,6 +31,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -52,6 +53,8 @@ PID_FILE = "gem5.pid"  # written while a gem5 process owns the directory
 # and results/gem5_<dataset>.csv. "fs" is the original dataset (Ubuntu kernel 6.8, no HMAT); set
 # TM_DATASET (or run_all_working_sets.py --dataset) to keep a new dataset apart, e.g. "fs_hmat".
 DATASET = os.environ.get("TM_DATASET", "fs")
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", DATASET):
+    raise ValueError("TM_DATASET must be a simple name containing letters, digits, '_' or '-'")
 FS_DIR = RESULTS / DATASET  # committed full-system runs, one directory each
 FS_CSV = RESULTS / f"gem5_{DATASET}.csv"
 
@@ -170,6 +173,10 @@ def collect(outdir, workload=None):
     """Report row for one run; also writes roi_stats.json and fs_result.json into outdir."""
     outdir = Path(outdir)
     text = guest_text(outdir)
+    # Capped runs never reach guest writefile. Preserve their console-derived evidence
+    # in the same small artifact as completed runs before ignored console files disappear.
+    if text and (outdir / ROI_CAPPED).exists() and not (outdir / GUEST_OUTPUT).exists():
+        (outdir / GUEST_OUTPUT).write_text(text)
     res = parse_result(text)
     # A run killed before its RESULT line still names its workload in run.json.
     workload = workload or res.get("name", "") or read_run_info(outdir).get("workload", "")
@@ -191,8 +198,40 @@ def collect(outdir, workload=None):
             row["roi_sec_guest"] = res.get("roi_sec", "")
     row["guest"] = parse_tagged(text, "GUESTINFO")
     row.update(parse_tagged(text, "LINUXSTATS"))
+    guest_exit = parse_tagged(text, "GUEST_EXIT").get("returncode")
+    if guest_exit is not None:
+        row["guest_exit_code"] = guest_exit
+    if "TIERING SETUP FAILED" in text or "SWAP SETUP FAILED" in text:
+        row["outcome"] = "setup_failed"
+    elif censored and row.get("sim_sec"):
+        row["outcome"] = "censored"
+    elif (
+        row["roi_completed"]
+        and "checksum" in row
+        and row.get("returncode") == 0
+        and guest_exit in (None, 0)
+    ):
+        row["outcome"] = "completed"
+    elif (
+        read_run_info(outdir).get("config") == "A"
+        and read_run_info(outdir).get("settings", {}).get("expect_oom")
+        and row.get("returncode") == -9
+        and (row.get("oom_kills") or 0) > 0
+    ):
+        row["outcome"] = "expected_oom"
+    else:
+        row["outcome"] = "failed"
     (outdir / FS_RESULT).write_text(json.dumps(row, indent=1, sort_keys=True) + "\n")
     return row
+
+
+def accepted_report(outdir):
+    """Resume only measured success, deliberate censoring, or confirmed expected OOM."""
+    row = read_json(Path(outdir) / FS_RESULT)
+    if "outcome" in row:
+        return row["outcome"] in ("completed", "censored", "expected_oom")
+    # Legacy completed results predate explicit outcomes; incomplete ones need review.
+    return row.get("roi_completed") is True and row.get("returncode") == 0 and "checksum" in row
 
 
 def read_run_info(outdir):
@@ -224,7 +263,7 @@ def csv_row(outdir, report=None):
     row["guest_swap_total_kib"] = guest.get("swap_total_kib", "")
     # The kernel's own placement mechanisms for this run (blank on runs from before they were
     # recorded; "none" for memory tiers means the kernel exposes no tiers).
-    for k in ("numa_balancing", "demotion_enabled"):
+    for k in ("numa_balancing", "demotion_enabled", "hmat_present"):
         v = guest.get(k)
         row[f"guest_{k}"] = "" if v is None else v
     if "memory_tiers" in guest:

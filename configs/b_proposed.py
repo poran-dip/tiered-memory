@@ -39,6 +39,7 @@ from fsboard import (  # noqa: E402
     LinkedMemory,
     TwoTierMemory,
     add_common_args,
+    add_hmat,
     add_srat,
     build_board,
     make_link,
@@ -51,7 +52,7 @@ from gem5.components.memory.single_channel import (  # noqa: E402
     SingleChannelDDR4_2400,
 )
 
-from tiered_memory import pcie  # noqa: E402
+from tiered_memory import hmat, pcie  # noqa: E402
 from tiered_memory.layout import DEFAULT_FAST, DEFAULT_SLOW, format_size, layout  # noqa: E402
 
 # Slow-tier DRAM choices. DDR3-1600 is the brief's "DDR3/DDR2 class" (gem5 has no DDR2 model);
@@ -88,6 +89,8 @@ p.add_argument(
 )
 add_common_args(p)
 args = parse_args(p)
+if args.tiering == "on" and not args.hmat:
+    p.error("--tiering on requires --hmat so the guest can verify separate memory tiers")
 
 regions = layout(args.fast_size, args.slow_size)  # validates sizes; node 1 sits above node 0
 if len(regions) != 2:
@@ -111,8 +114,14 @@ memory = TwoTierMemory(
     fast=SingleChannelDDR4_2400(size=format_size(fast.size)),
     slow=slow_dram if link_cfg is None else LinkedMemory(slow_dram, make_link(link_cfg)),
 )
-board = build_board(args, memory)
+try:
+    hmat_settings = hmat.attributes(link_cfg, args.slow_dram) if args.hmat else {"hmat": False}
+except ValueError as e:
+    p.error(str(e))
+board = build_board(args, memory, require_tiers=args.hmat)
 add_srat(board, regions)
+if args.hmat:
+    add_hmat(board, hmat_settings)
 run(
     board,
     args,
@@ -122,5 +131,6 @@ run(
         "slow_size": format_size(slow.size),
         "slow_dram": args.slow_dram.upper(),
         **pcie.settings(link_cfg),
+        **hmat_settings,
     },
 )

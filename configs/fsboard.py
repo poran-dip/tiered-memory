@@ -23,7 +23,9 @@ third_party/resources.json); the disk actually booted is the copy with our binar
 (scripts/setup.sh disk).
 """
 
+import argparse
 import json
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -78,7 +80,7 @@ from tiered_memory.fsreport import (  # noqa: E402
     release_outdir,
 )
 from tiered_memory.guest_script import TIERING_MODES, run_script  # noqa: E402
-from tiered_memory.hostinfo import GEM5_DIR, git_commit, host_columns  # noqa: E402
+from tiered_memory.hostinfo import GEM5_DIR, file_sha256, git_commit, host_columns  # noqa: E402
 from tiered_memory.layout import srat_records  # noqa: E402
 from tiered_memory.pcie import (  # noqa: E402
     DLL_OVERHEAD,
@@ -106,6 +108,18 @@ TICKS_PER_SEC = 10**12
 def add_common_args(p):
     """Arguments every full-system config shares. Workload args go after '--'."""
     p.add_argument("--workload", required=True, choices=NAMES)
+    p.add_argument("--kernel", help="explicit guest kernel ELF; overrides resources.json")
+    p.add_argument(
+        "--hmat",
+        action="store_true",
+        help="config B: publish HMAT and require distinct guest memory tiers",
+    )
+    p.add_argument(
+        "--expect-oom",
+        action="store_true",
+        help="accept a workload killed by confirmed guest OOM (A over only)",
+    )
+    p.add_argument("--cap-references", default="", help=argparse.SUPPRESS)
     p.add_argument(
         "--boot-cpu",
         choices=["kvm", "atomic"],
@@ -184,6 +198,12 @@ def add_common_args(p):
 def parse_args(p):
     """Parse a config's arguments and claim the -d directory for this run (see claim_outdir)."""
     args = p.parse_args()
+    for key in ("max_sim_sec", "roi_cap_sec", "roi_cap_insts"):
+        value = getattr(args, key)
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            p.error(f"--{key.replace('_', '-')} must be finite and positive")
+    if not math.isfinite(args.progress_sec) or args.progress_sec < 0:
+        p.error("--progress-sec must be finite and nonnegative")
     err = claim_outdir(m5.options.outdir, args.overwrite)
     if err:
         _die(err)
@@ -196,7 +216,7 @@ def _resources():
     return json.loads(RESOURCES_JSON.read_text())
 
 
-def build_board(args, memory, swap_device=None):
+def build_board(args, memory, swap_device=None, require_tiers=False):
     """X86 board with a boot-CPU/ROI-CPU switchable core and the run script attached.
 
     swap_device: guest block device the run script turns into swap before the workload (config D).
@@ -237,7 +257,7 @@ def build_board(args, memory, swap_device=None):
     if args.interactive:
         kernel_args.append("interactive")
     board.set_kernel_disk_workload(
-        kernel=KernelResource(local_path=res["kernel"]),
+        kernel=KernelResource(local_path=args.kernel or res["kernel"]),
         # make_disk.sh records the partition it actually found the root filesystem on; the
         # gem5-resources metadata value can be wrong (it says 1 for x86-ubuntu-24.04-img 4.0.0).
         disk_image=DiskImageResource(
@@ -250,6 +270,7 @@ def build_board(args, memory, swap_device=None):
             swap_device=swap_device,
             numactl=args.numactl,
             tiering=args.tiering,
+            require_tiers=require_tiers,
         ),
         kernel_args=kernel_args,
         disk_device=DISK_DEVICE,
@@ -434,6 +455,35 @@ def add_srat(board, regions):
     return srat
 
 
+def add_hmat(board, attrs):
+    """Publish domain 0 CPU access attributes for both SRAT memory domains."""
+    from m5.objects import X86ACPIHmat, X86ACPIHmatLocality, X86ACPIHmatProximityDomain
+
+    records = [X86ACPIHmatProximityDomain(initiator_domain=0, memory_domain=n) for n in (0, 1)]
+    # One nanosecond in picoseconds; bandwidth units are MB/s. Both matrices
+    # include local DRAM so Linux can compute relative abstract distances.
+    records += [
+        X86ACPIHmatLocality(
+            data_type=0,
+            entry_base_unit=1000,
+            initiators=[0],
+            targets=[0, 1],
+            entries=[attrs["hmat_fast_ns"], attrs["hmat_slow_ns"]],
+        ),
+        X86ACPIHmatLocality(
+            data_type=3,
+            entry_base_unit=1,
+            initiators=[0],
+            targets=[0, 1],
+            entries=[attrs["hmat_fast_mbps"], attrs["hmat_slow_mbps"]],
+        ),
+    ]
+    table = X86ACPIHmat(records=records, oem_id="gem5")
+    ptr = board.workload.acpi_description_table_pointer
+    ptr.rsdt.entries.append(table)
+    ptr.xsdt.entries.append(table)
+
+
 PROGRESS_EXIT = "tiered-memory progress"  # exit string of the scheduled progress exits
 
 # Set by run(): the ROI progress tracker, the board (for instruction counts) and an optional
@@ -441,6 +491,7 @@ PROGRESS_EXIT = "tiered-memory progress"  # exit string of the scheduled progres
 _progress = None
 _board = None
 _progress_extra = None
+_progress_logging = True
 
 
 def _insts():
@@ -516,23 +567,24 @@ def _install_handlers():
             if _progress is None or not _progress.active:
                 return  # a leftover exit from a finished ROI: ignore it, schedule nothing
             extra = _progress_extra() if _progress_extra else ""
-            print(_progress.sample(m5.curTick(), _insts(), time.monotonic(), extra), flush=True)
+            line = _progress.sample(m5.curTick(), _insts(), time.monotonic(), extra)
+            if _progress_logging:
+                print(line, flush=True)
             reason = _progress.cap_reason(m5.curTick(), _insts())
+            if not reason and _progress.over_budget(m5.curTick()):
+                reason = "max-sim-sec"
             if reason:
                 # Keep what the ROI measured so far: block 1 of stats.txt is then the partial ROI.
                 snap = _progress.snapshot(m5.curTick(), _insts(), reason)
                 m5.stats.dump()
                 _write_json(ROI_CAPPED, snap)
+                _write_json(ROI_PROGRESS, snap)
                 print(
                     f"[{_sim_sec():.2f}s sim] ROI cap reached ({reason}) at "
                     f"{snap['sim_sec']:.3f} s into the ROI, work {snap['work_pct']}%; stopping",
                     flush=True,
                 )
                 _progress.stop()
-                self._stop = True
-                return
-            if _progress.over_budget(m5.curTick()):
-                print("Giving up: the ROI has run longer than --max-sim-sec of simulated time")
                 self._stop = True
                 return
             _schedule_progress()
@@ -562,8 +614,10 @@ def run(board, args, config, settings=None, progress_extra=None):
     settings: the config's own options worth a CSV column each (e.g. {"fast_size": "512MiB"}).
     progress_extra: optional callable returning extra text for each ROI progress line.
     """
-    global _progress, _board, _progress_extra
+    global _progress, _board, _progress_extra, _progress_logging
     outdir = Path(m5.options.outdir)
+    kernel = Path(args.kernel or _resources()["kernel"]).resolve()
+    kernel_sha = file_sha256(kernel)
     info = {
         "config": config,
         "workload": args.workload,
@@ -574,6 +628,10 @@ def run(board, args, config, settings=None, progress_extra=None):
             "l2": args.l2,
             "numactl": args.numactl or "none",
             "tiering": args.tiering,
+            "kernel_path": str(kernel),
+            "kernel_sha256": kernel_sha,
+            "expect_oom": args.expect_oom,
+            "cap_references": args.cap_references,
             "roi_cap_sec": args.roi_cap_sec if args.roi_cap_sec else "",
             "roi_cap_insts": int(args.roi_cap_insts) if args.roi_cap_insts else "",
             **(settings or {}),
@@ -587,13 +645,15 @@ def run(board, args, config, settings=None, progress_extra=None):
     _write_run_info(outdir, info)
     wall0 = time.monotonic()
     _board, _progress_extra = board, progress_extra
-    if args.progress_sec > 0 or args.roi_cap_sec or args.roi_cap_insts:
-        _progress = Progress(
-            wall_gap=args.progress_sec or 15,
-            max_sim_sec=args.max_sim_sec,
-            cap_sec=args.roi_cap_sec,
-            cap_insts=args.roi_cap_insts,
-        )
+    _progress_logging = args.progress_sec > 0
+    _progress = Progress(
+        wall_gap=args.progress_sec or 15,
+        # An explicit ROI cap supersedes the legacy ROI time budget. The boot
+        # watchdog below remains active between exits.
+        max_sim_sec=None if args.roi_cap_sec or args.roi_cap_insts else args.max_sim_sec,
+        cap_sec=args.roi_cap_sec,
+        cap_insts=args.roi_cap_insts,
+    )
     _install_handlers()
     sim = Simulator(board=board)
     # Window per stretch between exit events, not a total budget: gem5 restarts it at each exit.
@@ -617,3 +677,5 @@ def run(board, args, config, settings=None, progress_extra=None):
         add_to_csv(csv_row(outdir, row), FS_CSV)
         print(f"Added to {FS_CSV}")
     release_outdir(outdir)
+    if row["outcome"] not in ("completed", "censored", "expected_oom"):
+        _die(f"run outcome: {row['outcome']}; inspect guest_output.txt and the console")

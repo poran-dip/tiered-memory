@@ -66,6 +66,22 @@ def apply(mode, write=sudo_write, reader=read):
             errors.append(f"{path}: {e}")
             continue
         got = reader(path)
-        if got != value:
+        normalized = {"true": "1", "false": "0"}.get(got, got) if path == DEMOTION else got
+        if normalized != value:
             errors.append(f"{path}: wrote {value}, reads {got}")
     return errors
+
+
+def distinct_tiers(tiers, fast=0, slow=1):
+    """Require the slow node in a strictly more distant Linux memory tier."""
+    node_tiers = {}
+    for tier, nodes in tiers.items():
+        for part in nodes.split(","):
+            bounds = part.split("-")
+            if not part or len(bounds) > 2:
+                continue
+            lo, hi = int(bounds[0]), int(bounds[-1])
+            for node in (fast, slow):
+                if lo <= node <= hi:
+                    node_tiers[node] = int(tier)
+    return fast in node_tiers and slow in node_tiers and node_tiers[slow] > node_tiers[fast]

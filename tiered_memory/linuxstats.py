@@ -55,6 +55,7 @@ def delta_columns(before, after):
     """Report columns from two snapshots. Counters are system-wide, so run on a quiet machine."""
     b, a = before["vmstat"], after["vmstat"]
     cols = {
+        "oom_kills": _diff(b, a, "oom_kill"),
         "promote_pages": _diff(b, a, "pgpromote_success"),
         "promote_candidates": _diff(b, a, "pgpromote_candidate"),
         "demote_pages": _diff_prefix(b, a, "pgdemote_"),

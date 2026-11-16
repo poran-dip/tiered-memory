@@ -3,6 +3,7 @@
 Standard library only, so it also works inside gem5's Python and in the full-system guest.
 """
 
+import hashlib
 import platform
 import re
 import subprocess
@@ -10,6 +11,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 GEM5_DIR = REPO / "third_party/gem5"
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _read(path):
@@ -55,7 +64,15 @@ def git_commit(path):
             check=True,
         ).stdout.strip()
         dirty = subprocess.run(
-            ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"],
+            [
+                "git",
+                "-C",
+                str(path),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+                *(["--", ".", ":(exclude)results"] if Path(path).resolve() == REPO else []),
+            ],
             capture_output=True,
             text=True,
             check=True,
